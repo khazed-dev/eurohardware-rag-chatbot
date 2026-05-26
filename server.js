@@ -10,10 +10,18 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const CRAWL_SECRET = process.env.CRAWL_SECRET;
 
-app.use(cors());
-app.use(express.json({
-  limit: "5mb"
+app.use(cors({
+  origin: [
+    "https://eurohardware.id.vn",
+    "https://www.eurohardware.id.vn",
+    "http://localhost:3000",
+    "http://localhost:5173"
+  ],
+  methods: ["GET", "POST"],
+  allowedHeaders: ["Content-Type"]
 }));
+
+app.use(express.json());
 
 app.get("/health", (req, res) => {
   res.json({
