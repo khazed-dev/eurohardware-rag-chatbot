@@ -7,7 +7,8 @@ const MATCH_COUNT = Number(process.env.RAG_MATCH_COUNT || 8);
 const MIN_SIMILARITY = Number(process.env.RAG_MIN_SIMILARITY || 0.35);
 const CHAT_DEBUG = process.env.CHAT_DEBUG === "true";
 const KEYWORD_SEARCH_LIMIT = Number(process.env.RAG_KEYWORD_SEARCH_LIMIT || 50);
-const SOURCE_CONTEXT_LIMIT = Number(process.env.RAG_SOURCE_CONTEXT_LIMIT || 3);
+const SOURCE_CONTEXT_LIMIT = Number(process.env.RAG_SOURCE_CONTEXT_LIMIT || 2);
+const SOURCE_SNIPPET_CHAR_LIMIT = Number(process.env.RAG_SOURCE_SNIPPET_CHAR_LIMIT || 1200);
 const DEFAULT_HOTLINE = process.env.CONTACT_HOTLINE || "079 619 2091";
 
 const STOP_WORDS = new Set([
@@ -428,7 +429,7 @@ function buildContext(sourceGroups = [], sourceDocuments = []) {
         `Diem tu khoa: ${group.keywordScore}`,
         `So chunk lien quan: ${documents.length}`,
         "Noi dung tong hop:",
-        sanitizeSnippet(combinedContent, 2400)
+        sanitizeSnippet(combinedContent, SOURCE_SNIPPET_CHAR_LIMIT)
       ]
         .filter(Boolean)
         .join("\n");
@@ -436,12 +437,13 @@ function buildContext(sourceGroups = [], sourceDocuments = []) {
     .join("\n\n");
 }
 
-function buildRetrievalDebug(question, vectorMatches, keywordMatches, sourceGroups) {
+function buildRetrievalDebug(question, vectorMatches, keywordMatches, sourceGroups, timings = {}) {
   return {
     question,
     vector_match_count: vectorMatches.length,
     keyword_match_count: keywordMatches.length,
     selected_source_count: sourceGroups.length,
+    timings_ms: timings,
     selected_sources: sourceGroups.map((item) => ({
       source_root: item.source_root,
       title: item.title,
@@ -462,13 +464,19 @@ export async function askRag(question) {
     throw new Error("Question is required");
   }
 
+  const requestStartedAt = Date.now();
   const cleanQuestion = normalizeWhitespace(question);
-  const queryEmbedding = await createEmbedding(cleanQuestion);
 
+  const embeddingStartedAt = Date.now();
+  const queryEmbedding = await createEmbedding(cleanQuestion);
+  const embeddingMs = Date.now() - embeddingStartedAt;
+
+  const vectorSearchStartedAt = Date.now();
   const { data: vectorMatches, error } = await supabase.rpc("match_website_documents", {
     query_embedding: queryEmbedding,
     match_count: MATCH_COUNT
   });
+  const vectorSearchMs = Date.now() - vectorSearchStartedAt;
 
   if (error) {
     throw error;
@@ -476,15 +484,25 @@ export async function askRag(question) {
 
   const keywords = extractKeywords(cleanQuestion);
   const strongTokens = extractStrongTokens(cleanQuestion);
+  const keywordSearchStartedAt = Date.now();
   const keywordMatches = await searchKeywordMatches(keywords, strongTokens);
+  const keywordSearchMs = Date.now() - keywordSearchStartedAt;
   const mergedMatches = mergeMatches(vectorMatches || [], keywordMatches);
   const scoredMatches = scoreMatches(cleanQuestion, mergedMatches);
   const sourceGroups = groupMatchesBySource(cleanQuestion, scoredMatches);
+  const timings = {
+    embedding: embeddingMs,
+    vector_search: vectorSearchMs,
+    keyword_search: keywordSearchMs,
+    retrieval_processing:
+      Math.max(Date.now() - requestStartedAt - embeddingMs - vectorSearchMs - keywordSearchMs, 0)
+  };
   const retrievalDebug = buildRetrievalDebug(
     cleanQuestion,
     vectorMatches || [],
     keywordMatches,
-    sourceGroups
+    sourceGroups,
+    timings
   );
 
   if (CHAT_DEBUG) {
@@ -496,19 +514,29 @@ export async function askRag(question) {
       reply:
         "Da, hien em chua tim thay thong tin du sat tren website. Anh/chi co the de lai nhu cau cu the hoac lien he Hotline/Zalo 079 619 2091 de doi ngu Euro Hardware ho tro nhanh hon a.",
       sources: [],
-      debug: retrievalDebug
+      debug: {
+        ...retrievalDebug,
+        timings_ms: {
+          ...timings,
+          total: Date.now() - requestStartedAt
+        }
+      }
     };
   }
 
+  const sourceFetchStartedAt = Date.now();
   const sourceDocuments = await fetchSourceContext(sourceGroups.map((group) => group.source_root));
+  timings.source_context_fetch = Date.now() - sourceFetchStartedAt;
   const context = buildContext(sourceGroups, sourceDocuments);
   let reply;
 
   try {
+    const generationStartedAt = Date.now();
     reply = await generateAnswer({
       question: cleanQuestion,
       context
     });
+    timings.answer_generation = Date.now() - generationStartedAt;
   } catch (error) {
     const message = error.message || "";
     const isQuotaOrTemporaryError =
@@ -524,7 +552,10 @@ export async function askRag(question) {
 
     console.warn("Gemini fallback reply activated:", message);
     reply = buildFallbackReply(cleanQuestion, sourceGroups);
+    timings.answer_generation = timings.answer_generation || 0;
   }
+
+  timings.total = Date.now() - requestStartedAt;
 
   const sources = sourceGroups.map((item) => ({
     title: item.title,
@@ -536,6 +567,9 @@ export async function askRag(question) {
   return {
     reply,
     sources,
-    debug: retrievalDebug
+    debug: {
+      ...retrievalDebug,
+      timings_ms: timings
+    }
   };
 }

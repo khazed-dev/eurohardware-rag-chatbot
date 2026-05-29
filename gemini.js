@@ -5,6 +5,7 @@ dotenv.config();
 
 const apiKey = process.env.GEMINI_API_KEY;
 const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const maxOutputTokens = Number(process.env.GEMINI_MAX_OUTPUT_TOKENS || 350);
 
 if (!apiKey) {
   console.warn("Missing GEMINI_API_KEY in .env. Chat answer generation will fail.");
@@ -66,7 +67,7 @@ export async function generateAnswer({ question, context }) {
       temperature: 0.4,
       topP: 0.9,
       topK: 32,
-      maxOutputTokens: 700
+      maxOutputTokens
     }
   });
 
