@@ -6,8 +6,9 @@ import { sanitizeSnippet, normalizeWhitespace } from "./utils.js";
 const MATCH_COUNT = Number(process.env.RAG_MATCH_COUNT || 8);
 const MIN_SIMILARITY = Number(process.env.RAG_MIN_SIMILARITY || 0.35);
 const CHAT_DEBUG = process.env.CHAT_DEBUG === "true";
-const KEYWORD_SEARCH_LIMIT = Number(process.env.RAG_KEYWORD_SEARCH_LIMIT || 20);
+const KEYWORD_SEARCH_LIMIT = Number(process.env.RAG_KEYWORD_SEARCH_LIMIT || 50);
 const SOURCE_CONTEXT_LIMIT = Number(process.env.RAG_SOURCE_CONTEXT_LIMIT || 3);
+const DEFAULT_HOTLINE = process.env.CONTACT_HOTLINE || "079 619 2091";
 
 const STOP_WORDS = new Set([
   "la",
@@ -94,9 +95,17 @@ function getSourceRoot(sourceId = "") {
   return sourceId.includes("::chunk::") ? sourceId.split("::chunk::")[0] : sourceId;
 }
 
+function buildFallbackSourceKey(match = {}) {
+  return match.url || `${match.source_type || "unknown"}::${match.title || "untitled"}`;
+}
+
 function getSourceTypeBonus(intent, sourceType = "") {
   if (intent.isPriceIntent && sourceType === "product") {
-    return 12;
+    return 24;
+  }
+
+  if (intent.isPriceIntent && sourceType === "post") {
+    return -6;
   }
 
   if (intent.isCategoryIntent && (sourceType === "category" || sourceType === "page")) {
@@ -113,6 +122,59 @@ function getSourceTypeBonus(intent, sourceType = "") {
 
   if (sourceType === "product") {
     return 2;
+  }
+
+  return 0;
+}
+
+function buildFallbackReply(question, sourceGroups) {
+  const intent = detectIntent(question);
+  const primarySource = sourceGroups[0];
+
+  if (!primarySource) {
+    return `Chao anh/chi, hien thong tin em co chua du de tu van that sat nhu cau nay. Anh/chi co the de lai yeu cau cu the hon hoac lien he Hotline/Zalo ${DEFAULT_HOTLINE} de ben em ho tro nhanh va dung hon nha.`;
+  }
+
+  const productLink = primarySource.url ? `\nAnh/chi xem them tai day: ${primarySource.url}` : "";
+
+  if (intent.isPriceIntent) {
+    return `Chao anh/chi, ben em co san pham "${primarySource.title}" nha. Hien muc gia tren website co the dang de theo hinh thuc tu van truc tiep, nen anh/chi vui long dang ky bao gia tai https://eurohardware.id.vn/bao-gia hoac lien he Hotline/Zalo ${DEFAULT_HOTLINE} de ben em gui bao gia chinh xac va nhanh hon.${productLink}`;
+  }
+
+  if (primarySource.source_type === "product") {
+    return `Chao anh/chi, san pham phu hop voi nhu cau anh/chi la "${primarySource.title}" nha.${productLink}`;
+  }
+
+  return `Chao anh/chi, ben em gui anh/chi thong tin tham khao phu hop nhat o day nha.${productLink}`;
+}
+
+function compareSourceGroups(a, b, intent) {
+  const aHasStrongProductSignal = a.source_type === "product" && (a.exactTokenBonus || 0) > 0;
+  const bHasStrongProductSignal = b.source_type === "product" && (b.exactTokenBonus || 0) > 0;
+
+  if (aHasStrongProductSignal !== bHasStrongProductSignal) {
+    return bHasStrongProductSignal - aHasStrongProductSignal;
+  }
+
+  if (intent.isPriceIntent) {
+    const aIsProduct = a.source_type === "product" ? 1 : 0;
+    const bIsProduct = b.source_type === "product" ? 1 : 0;
+
+    if (aIsProduct !== bIsProduct) {
+      return bIsProduct - aIsProduct;
+    }
+  }
+
+  if (b.rerankScore !== a.rerankScore) {
+    return b.rerankScore - a.rerankScore;
+  }
+
+  if ((b.exactTokenBonus || 0) !== (a.exactTokenBonus || 0)) {
+    return (b.exactTokenBonus || 0) - (a.exactTokenBonus || 0);
+  }
+
+  if ((b.keywordScore || 0) !== (a.keywordScore || 0)) {
+    return (b.keywordScore || 0) - (a.keywordScore || 0);
   }
 
   return 0;
@@ -159,7 +221,9 @@ function computeKeywordScore(questionKeywords, strongTokens, match) {
 }
 
 async function searchKeywordMatches(questionKeywords, strongTokens) {
-  const searchTerms = Array.from(new Set([...strongTokens, ...questionKeywords])).slice(0, 6);
+  const searchTerms = strongTokens.length
+    ? Array.from(new Set(strongTokens))
+    : Array.from(new Set(questionKeywords)).slice(0, 6);
 
   if (!searchTerms.length) {
     return [];
@@ -190,7 +254,7 @@ function mergeMatches(vectorMatches = [], keywordMatches = []) {
   const merged = new Map();
 
   for (const match of [...vectorMatches, ...keywordMatches]) {
-    const key = match.source_id;
+    const key = match.source_id || buildFallbackSourceKey(match);
     const existing = merged.get(key);
 
     if (!existing) {
@@ -218,7 +282,16 @@ function scoreMatches(question, matches = []) {
     const sourceTypeBonus = getSourceTypeBonus(intent, match.source_type || "");
     const exactTokenBonus =
       strongTokens.some((token) => normalizeForSearch(match.title || "").includes(token)) ? 20 : 0;
-    const rerankScore = similarity * 100 + keywordScore * 4 + sourceTypeBonus + exactTokenBonus;
+    const contentTokenBonus =
+      strongTokens.some((token) => normalizeForSearch(match.content || "").includes(token)) ? 10 : 0;
+    const titleTokenPenalty = strongTokens.length && exactTokenBonus === 0 && contentTokenBonus === 0 ? -18 : 0;
+    const rerankScore =
+      similarity * 100 +
+      keywordScore * 4 +
+      sourceTypeBonus +
+      exactTokenBonus +
+      contentTokenBonus +
+      titleTokenPenalty;
 
     return {
       ...match,
@@ -226,13 +299,17 @@ function scoreMatches(question, matches = []) {
       keywordScore,
       sourceTypeBonus,
       exactTokenBonus,
+      contentTokenBonus,
+      titleTokenPenalty,
       rerankScore,
-      source_root: getSourceRoot(match.source_id || "")
+      source_root: getSourceRoot(match.source_id || "") || buildFallbackSourceKey(match)
     };
   });
 }
 
-function groupMatchesBySource(scoredMatches = []) {
+function groupMatchesBySource(question, scoredMatches = []) {
+  const strongTokens = extractStrongTokens(question);
+  const intent = detectIntent(question);
   const grouped = new Map();
 
   for (const match of scoredMatches) {
@@ -264,9 +341,26 @@ function groupMatchesBySource(scoredMatches = []) {
   }
 
   return Array.from(grouped.values())
-    .sort((a, b) => b.rerankScore - a.rerankScore)
+    .sort((a, b) => compareSourceGroups(a, b, intent))
+    .filter((group) => {
+      if (strongTokens.length && group.source_type === "product" && group.exactTokenBonus > 0) {
+        return true;
+      }
+
+      if (intent.isPriceIntent && strongTokens.length && group.source_type === "post") {
+        const hasExactToken = group.exactTokenBonus > 0;
+        const hasStrongKeyword = group.keywordScore >= 20;
+        return hasExactToken && hasStrongKeyword;
+      }
+
+      return true;
+    })
     .slice(0, SOURCE_CONTEXT_LIMIT)
     .filter((group, index, all) => {
+      if (strongTokens.length && group.exactTokenBonus <= 0 && group.keywordScore < 8) {
+        return false;
+      }
+
       if (index === 0) {
         return true;
       }
@@ -355,6 +449,8 @@ function buildRetrievalDebug(question, vectorMatches, keywordMatches, sourceGrou
       similarity: Number(item.similarity || 0).toFixed(3),
       keywordScore: item.keywordScore,
       exactTokenBonus: item.exactTokenBonus,
+      contentTokenBonus: item.contentTokenBonus,
+      titleTokenPenalty: item.titleTokenPenalty,
       rerankScore: Number(item.rerankScore || 0).toFixed(3),
       url: item.url
     }))
@@ -383,7 +479,7 @@ export async function askRag(question) {
   const keywordMatches = await searchKeywordMatches(keywords, strongTokens);
   const mergedMatches = mergeMatches(vectorMatches || [], keywordMatches);
   const scoredMatches = scoreMatches(cleanQuestion, mergedMatches);
-  const sourceGroups = groupMatchesBySource(scoredMatches);
+  const sourceGroups = groupMatchesBySource(cleanQuestion, scoredMatches);
   const retrievalDebug = buildRetrievalDebug(
     cleanQuestion,
     vectorMatches || [],
@@ -406,10 +502,29 @@ export async function askRag(question) {
 
   const sourceDocuments = await fetchSourceContext(sourceGroups.map((group) => group.source_root));
   const context = buildContext(sourceGroups, sourceDocuments);
-  const reply = await generateAnswer({
-    question: cleanQuestion,
-    context
-  });
+  let reply;
+
+  try {
+    reply = await generateAnswer({
+      question: cleanQuestion,
+      context
+    });
+  } catch (error) {
+    const message = error.message || "";
+    const isQuotaOrTemporaryError =
+      message.includes("429") ||
+      message.includes("Too Many Requests") ||
+      message.includes("quota") ||
+      message.includes("503") ||
+      message.includes("Service Unavailable");
+
+    if (!isQuotaOrTemporaryError) {
+      throw error;
+    }
+
+    console.warn("Gemini fallback reply activated:", message);
+    reply = buildFallbackReply(cleanQuestion, sourceGroups);
+  }
 
   const sources = sourceGroups.map((item) => ({
     title: item.title,
