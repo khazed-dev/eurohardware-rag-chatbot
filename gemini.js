@@ -1,17 +1,14 @@
 import dotenv from "dotenv";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 
 dotenv.config();
 
-const apiKey = process.env.GEMINI_API_KEY;
-const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-const maxOutputTokens = Number(process.env.GEMINI_MAX_OUTPUT_TOKENS || 550);
-
-if (!apiKey) {
-  console.warn("Missing GEMINI_API_KEY in .env. Chat answer generation will fail.");
-}
-
-const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
+const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
+const OLLAMA_CHAT_MODEL =
+  process.env.OLLAMA_CHAT_MODEL || process.env.OLLAMA_MODEL || "qwen2.5:7b-instruct";
+const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 45000);
+const OLLAMA_MAX_RETRIES = Number(process.env.OLLAMA_MAX_RETRIES || 2);
+const OLLAMA_TEMPERATURE = Number(process.env.OLLAMA_TEMPERATURE || 0.4);
+const OLLAMA_NUM_PREDICT = Number(process.env.OLLAMA_NUM_PREDICT || 550);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -73,49 +70,88 @@ Hay viet 1 cau tra loi cu the, mem mai, huu ich va bam sat du lieu.
   `.trim();
 }
 
-export async function generateAnswer({ question, context, concise = false }) {
-  if (!genAI) {
-    throw new Error("Gemini API key is missing");
-  }
+function isTemporaryOllamaError(message = "") {
+  return [
+    "timeout",
+    "timed out",
+    "econnrefused",
+    "socket hang up",
+    "connection reset",
+    "model is loading",
+    "try again",
+    "unavailable",
+    "overloaded"
+  ].some((keyword) => message.toLowerCase().includes(keyword));
+}
 
-  const model = genAI.getGenerativeModel({
-    model: modelName,
-    generationConfig: {
-      temperature: 0.4,
-      topP: 0.9,
-      topK: 32,
-      maxOutputTokens
+async function requestOllama(prompt) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: OLLAMA_CHAT_MODEL,
+        prompt,
+        stream: false,
+        options: {
+          temperature: OLLAMA_TEMPERATURE,
+          num_predict: OLLAMA_NUM_PREDICT
+        }
+      }),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Ollama chat failed: ${errorText}`);
     }
-  });
 
+    const data = await response.json();
+
+    if (!data.response) {
+      throw new Error("Ollama did not return generated text");
+    }
+
+    return cleanAnswer(data.response);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+export async function generateAnswer({ question, context, concise = false }) {
   const prompt = buildPrompt({ question, context, concise });
-  const maxRetries = 3;
-  const delays = [2000, 5000, 10000];
+  let lastError;
 
-  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+  for (let attempt = 1; attempt <= OLLAMA_MAX_RETRIES; attempt += 1) {
     try {
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      return cleanAnswer(response.text());
+      return await requestOllama(prompt);
     } catch (error) {
-      const message = error.message || "";
-      const isTemporaryError =
-        message.includes("503") ||
-        message.includes("Service Unavailable") ||
-        message.includes("high demand") ||
-        message.includes("429") ||
-        message.includes("Too Many Requests");
+      lastError = error;
+      const message = error?.message || "";
+      const isAbort = error?.name === "AbortError";
 
-      if (!isTemporaryError || attempt === maxRetries) {
-        throw error;
+      if (attempt >= OLLAMA_MAX_RETRIES || (!isAbort && !isTemporaryOllamaError(message))) {
+        break;
       }
 
       console.warn(
-        `Gemini temporary error. Retry ${attempt}/${maxRetries} after ${delays[attempt - 1]}ms`
+        `Ollama temporary error. Retry ${attempt}/${OLLAMA_MAX_RETRIES} after ${1000 * attempt}ms`
       );
-      await sleep(delays[attempt - 1]);
+      await sleep(1000 * attempt);
     }
   }
 
-  throw new Error("Gemini failed after retries");
+  const reason =
+    lastError?.name === "AbortError"
+      ? `timeout after ${OLLAMA_TIMEOUT_MS}ms`
+      : lastError?.message || "unknown error";
+
+  throw new Error(
+    `Ollama answer generation failed for model "${OLLAMA_CHAT_MODEL}" at ${OLLAMA_BASE_URL}: ${reason}`
+  );
 }

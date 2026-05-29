@@ -607,18 +607,24 @@ export async function askRag(question) {
     }
   } catch (error) {
     const message = error.message || "";
-    const isQuotaOrTemporaryError =
+    const normalizedMessage = message.toLowerCase();
+    const isTemporaryAnswerError =
       message.includes("429") ||
       message.includes("Too Many Requests") ||
       message.includes("quota") ||
       message.includes("503") ||
-      message.includes("Service Unavailable");
+      message.includes("Service Unavailable") ||
+      normalizedMessage.includes("ollama answer generation failed") ||
+      normalizedMessage.includes("timeout") ||
+      normalizedMessage.includes("econnrefused") ||
+      normalizedMessage.includes("model is loading") ||
+      normalizedMessage.includes("unavailable");
 
-    if (!isQuotaOrTemporaryError) {
+    if (!isTemporaryAnswerError) {
       throw error;
     }
 
-    console.warn("Gemini fallback reply activated:", message);
+    console.warn("Answer fallback reply activated:", message);
     reply = buildFallbackReply(cleanQuestion, sourceGroups);
     timings.answer_generation = timings.answer_generation || 0;
   }
