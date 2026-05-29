@@ -8,7 +8,8 @@ import {
   buildDocumentContent,
   buildChunkedDocuments,
   normalizeWhitespace,
-  sanitizeText
+  sanitizeText,
+  cleanExtractedContent
 } from "./utils.js";
 
 dotenv.config();
@@ -133,8 +134,8 @@ function formatPrice(product) {
 }
 
 function buildProductContent(product, title, url, categories) {
-  const shortDescription = stripHtml(product.short_description || "");
-  const description = stripHtml(product.description || "");
+  const shortDescription = cleanExtractedContent(stripHtml(product.short_description || ""));
+  const description = cleanExtractedContent(stripHtml(product.description || ""));
   const brand = joinValues(product.brands?.map((brandItem) => brandItem.name) || []);
   const tags = joinValues(product.tags?.map((tag) => tag.name) || []);
   const attributes = Array.isArray(product.attributes)
@@ -187,8 +188,8 @@ function mapProduct(product) {
 function mapPost(post) {
   const title = stripHtml(post.title?.rendered || "");
   const url = post.link || "";
-  const excerpt = stripHtml(post.excerpt?.rendered || "");
-  const contentText = stripHtml(post.content?.rendered || excerpt);
+  const excerpt = cleanExtractedContent(stripHtml(post.excerpt?.rendered || ""));
+  const contentText = cleanExtractedContent(stripHtml(post.content?.rendered || excerpt));
 
   const content = buildDocumentContent({
     title,
@@ -212,8 +213,8 @@ function mapPost(post) {
 function mapPage(page) {
   const title = stripHtml(page.title?.rendered || "");
   const url = page.link || "";
-  const excerpt = stripHtml(page.excerpt?.rendered || "");
-  const contentText = stripHtml(page.content?.rendered || excerpt);
+  const excerpt = cleanExtractedContent(stripHtml(page.excerpt?.rendered || ""));
+  const contentText = cleanExtractedContent(stripHtml(page.content?.rendered || excerpt));
 
   const content = buildDocumentContent({
     title,
@@ -237,7 +238,7 @@ function mapPage(page) {
 function mapCategory(category) {
   const title = stripHtml(category.name || "");
   const url = category.permalink || category.link || "";
-  const description = stripHtml(category.description || "");
+  const description = cleanExtractedContent(stripHtml(category.description || ""));
 
   const content = buildDocumentContent({
     title,

@@ -72,6 +72,81 @@ export function stripHtml(input = "") {
   );
 }
 
+function removeCssAndTemplateNoise(text = "") {
+  return String(text)
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(
+      /\b(color|background(?:-color)?|font-size|font-weight|padding(?:-[a-z]+)?|margin(?:-[a-z]+)?|border(?:-[a-z]+)?|line-height|text-align|display|justify-content|align-items|width|height|max-width|min-width|max-height|min-height|position|top|left|right|bottom|z-index|overflow(?:-[a-z]+)?|white-space|word-break)\s*:\s*[^;}{]+;?/gi,
+      " "
+    )
+    .replace(/[{}]/g, " ")
+    .replace(/\s*;\s*/g, "; ")
+    .replace(/\s{2,}/g, " ");
+}
+
+function isLikelyNoiseSegment(segment = "") {
+  const text = normalizeWhitespace(segment);
+
+  if (!text) {
+    return true;
+  }
+
+  if (text.length <= 2) {
+    return true;
+  }
+
+  if (/^(color|padding|margin|border|display|justify-content|align-items|font-size|line-height)\s*:/i.test(text)) {
+    return true;
+  }
+
+  if (/^(javascript|function|\$\(document\)|var\s|let\s|const\s)/i.test(text)) {
+    return true;
+  }
+
+  if (/^[#.;:{}()[\]0-9a-z-]+$/i.test(text) && !/[a-z]/i.test(text.replace(/[a-z]{3,}/gi, ""))) {
+    return true;
+  }
+
+  const alphaCount = (text.match(/[a-zA-ZÀ-ỹ]/g) || []).length;
+  const symbolCount = (text.match(/[^a-zA-ZÀ-ỹ0-9\s]/g) || []).length;
+
+  if (alphaCount > 0 && symbolCount > alphaCount) {
+    return true;
+  }
+
+  return false;
+}
+
+export function cleanExtractedContent(input = "") {
+  const cleaned = normalizeWhitespace(removeCssAndTemplateNoise(input));
+
+  if (!cleaned) {
+    return "";
+  }
+
+  const segments = cleaned
+    .split(/\n+|(?<=[.!?;:])\s+/)
+    .map((segment) => normalizeWhitespace(segment))
+    .filter(Boolean)
+    .filter((segment) => !isLikelyNoiseSegment(segment));
+
+  const dedupedSegments = [];
+  const seen = new Set();
+
+  for (const segment of segments) {
+    const key = segment.toLowerCase();
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    dedupedSegments.push(segment);
+  }
+
+  return normalizeWhitespace(dedupedSegments.join("\n"));
+}
+
 export function createHash(text = "") {
   return crypto.createHash("sha256").update(text).digest("hex");
 }
