@@ -6,7 +6,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "crawl": "node -e \"import('./crawler.js').then(({ crawlWebsite }) => crawlWebsite().then((stats) => console.log(JSON.stringify(stats, null, 2))))\""
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

@@ -16,28 +16,41 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function cleanAnswer(text = "") {
+  return String(text)
+    .replace(/\r/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function buildPrompt({ question, context }) {
   return `
-Bạn là trợ lý tư vấn của Euro Door Hardware JSC, chuyên hỗ trợ khách hàng về phụ kiện cửa, khóa thông minh, gioăng EPDM, keo silicone và vật tư ngành cửa.
+Ban la tro ly tu van cua Euro Door Hardware JSC, chuyen ho tro khach hang ve phu kien cua, khoa thong minh, gioang EPDM, keo silicone va vat tu nganh cua.
 
-Hãy trả lời khách hàng dựa trên DỮ LIỆU WEBSITE được cung cấp bên dưới.
+Ban chi duoc phep tra loi dua tren DU LIEU WEBSITE duoc cung cap. Khong tu bo sung thong tin ben ngoai.
 
-Nguyên tắc trả lời:
-- Luôn trả lời bằng tiếng Việt.
-- Trả lời ngắn gọn, rõ ràng, lịch sự, phù hợp tư vấn bán hàng.
-- Chỉ dùng thông tin có trong dữ liệu website.
-- Không tự bịa giá, tồn kho, chiết khấu, thông số kỹ thuật hoặc chính sách nếu dữ liệu không có.
-- Nếu dữ liệu không đủ, hãy nói chưa có thông tin đầy đủ và đề nghị khách để lại số điện thoại/Zalo để nhân viên tư vấn.
-- Khi khách hỏi báo giá, hãy Gửi link đăng kí nhận báo giá trên website: https://eurohardware.id.vn/bao-gia và đề nghị khách điền thông tin để được tư vấn nhanh chóng.
-- Khi phù hợp, gợi ý khách liên hệ Hotline/Zalo: 079 619 2091.
-- Nếu có link sản phẩm hoặc bài viết trong dữ liệu, hãy gửi link cho khách.
+Nguyen tac tra loi:
+- Luon tra loi bang tieng Viet tu nhien, lich su, de doc.
+- Tra loi dung trong tam cau hoi, uu tien phong cach tu van ban hang chuyen nghiep.
+- Neu tim thay thong tin phu hop, hay tra loi truc tiep truoc, sau do co the goi y them 1 buoc tiep theo neu can.
+- Neu co nhieu lua chon phu hop, hay tom tat ngan gon tung lua chon thay vi liet ke qua dai.
+- Neu du lieu khong du de ket luan, noi ro "hien website chua co thong tin day du" va moi khach lien he Hotline/Zalo 082 820 8218.
+- Neu khach hoi bao gia, luon gui link dang ky nhan bao gia: https://eurohardware.id.vn/bao-gia
+- Neu trong du lieu co link san pham, danh muc hoac bai viet lien quan, hay chen link do vao cau tra loi.
+- Khong tu dua ra ton kho, chiet khau, thong so ky thuat, chinh sach bao hanh hay thoi gian giao hang neu du lieu khong neu.
+- Khong nhac den "context", "nguon", "embedding" hay cac thuong thuat ky thuat noi bo.
+- Uu tien thong tin tu san pham va trang lien quan nhat. Neu cac nguon mau thuan, uu tien nguon co do lien quan cao hon va noi dung cu the hon.
+- Neu cau hoi ve san pham, hay tra loi theo cau truc: thong tin chinh, diem noi bat neu co, link tham khao.
+- Neu khach hoi rat ngan hoac mo ho, hay hoi lai 1 cau duy nhat de lam ro nhu cau thay vi tra loi dai.
 
-DỮ LIỆU WEBSITE:
+DU LIEU WEBSITE:
 ${context}
 
-CÂU HỎI KHÁCH HÀNG:
+CAU HOI KHACH HANG:
 ${question}
-`;
+
+Hay viet 1 cau tra loi cu the, mem mai, huu ich va bam sat du lieu.
+  `.trim();
 }
 
 export async function generateAnswer({ question, context }) {
@@ -46,22 +59,26 @@ export async function generateAnswer({ question, context }) {
   }
 
   const model = genAI.getGenerativeModel({
-    model: modelName
+    model: modelName,
+    generationConfig: {
+      temperature: 0.4,
+      topP: 0.9,
+      topK: 32,
+      maxOutputTokens: 700
+    }
   });
 
   const prompt = buildPrompt({ question, context });
-
   const maxRetries = 3;
   const delays = [2000, 5000, 10000];
 
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
     try {
       const result = await model.generateContent(prompt);
       const response = await result.response;
-      return response.text();
+      return cleanAnswer(response.text());
     } catch (error) {
       const message = error.message || "";
-
       const isTemporaryError =
         message.includes("503") ||
         message.includes("Service Unavailable") ||
@@ -73,7 +90,9 @@ export async function generateAnswer({ question, context }) {
         throw error;
       }
 
-      console.warn(`Gemini temporary error. Retry ${attempt}/${maxRetries} after ${delays[attempt - 1]}ms`);
+      console.warn(
+        `Gemini temporary error. Retry ${attempt}/${maxRetries} after ${delays[attempt - 1]}ms`
+      );
       await sleep(delays[attempt - 1]);
     }
   }

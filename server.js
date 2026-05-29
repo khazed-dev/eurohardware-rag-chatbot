@@ -9,6 +9,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 const CRAWL_SECRET = process.env.CRAWL_SECRET;
+const CHAT_DEBUG = process.env.CHAT_DEBUG === "true";
 
 app.use(cors({
   origin: [
@@ -77,7 +78,17 @@ app.post("/chat", async (req, res) => {
       });
     }
 
+    const startedAt = Date.now();
     const result = await askRag(message);
+
+    if (CHAT_DEBUG) {
+      console.log("Chat debug:", JSON.stringify({
+        message,
+        elapsed_ms: Date.now() - startedAt,
+        sources: result.sources,
+        retrieval: result.debug
+      }, null, 2));
+    }
 
     res.json({
       success: true,
