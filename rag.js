@@ -179,6 +179,21 @@ function isLikelyTruncatedAnswer(answer = "") {
   return sentenceEndCount < 2 && text.length >= 40;
 }
 
+function dedupeSources(sources = []) {
+  const seen = new Set();
+
+  return sources.filter((item) => {
+    const key = item.url || `${item.title || ""}::${item.source_type || ""}`;
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+}
+
 function compareSourceGroups(a, b, intent) {
   const aHasStrongProductSignal = a.source_type === "product" && (a.exactTokenBonus || 0) > 0;
   const bHasStrongProductSignal = b.source_type === "product" && (b.exactTokenBonus || 0) > 0;
@@ -610,12 +625,14 @@ export async function askRag(question) {
 
   timings.total = Date.now() - requestStartedAt;
 
-  const sources = sourceGroups.map((item) => ({
-    title: item.title,
-    url: item.url,
-    source_type: item.source_type,
-    similarity: item.similarity
-  }));
+  const sources = dedupeSources(
+    sourceGroups.map((item) => ({
+      title: item.title,
+      url: item.url,
+      source_type: item.source_type,
+      similarity: item.similarity
+    }))
+  );
 
   return {
     reply,

@@ -20,6 +20,8 @@ function sleep(ms) {
 function cleanAnswer(text = "") {
   return String(text)
     .replace(/\r/g, "")
+    .replace(/\n\s*Tham khảo thêm:\s*[\s\S]*$/i, "")
+    .replace(/\n\s*Tham khao them:\s*[\s\S]*$/i, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -28,12 +30,14 @@ function buildPrompt({ question, context, concise = false }) {
   const brevityRules = concise
     ? [
         "- Tra loi that ngan gon, toi da 3 cau ngan.",
-        "- Neu can chen link, chi chen toi da 2 link lien quan nhat.",
+        "- Khong tao muc 'Tham khao them' hoac danh sach link o cuoi cau tra loi.",
+        "- Neu can nhac link, chi nhac toi da 1 link va chen tu nhien trong 1 cau.",
         "- Khong mo dau dai dong, vao thang cau tra loi chinh."
       ]
     : [
         "- Tra loi ngan gon, uu tien toi da 4 cau hoac 3 muc ngan.",
-        "- Neu can chen link, chi chen 1-2 link lien quan nhat, khong liet ke qua nhieu.",
+        "- Khong tao muc 'Tham khao them', khong danh so 1. 2. 3., khong liet ke danh sach link o cuoi.",
+        "- Neu can chen link, chi nhac toi da 1 link lien quan nhat va chen tu nhien trong cau.",
         "- Uu tien cau tra loi hoan chinh, tranh mo rong khong can thiet."
       ];
 
@@ -50,12 +54,12 @@ Nguyen tac tra loi:
 - Neu co nhieu lua chon phu hop, hay tom tat ngan gon tung lua chon thay vi liet ke qua dai.
 - Neu du lieu khong du de ket luan, noi ro "hien website chua co thong tin day du" va moi khach lien he Hotline/Zalo 079 619 2091.
 - Neu khach hoi bao gia, luon gui link dang ky nhan bao gia: https://eurohardware.id.vn/bao-gia
-- Neu trong du lieu co link san pham, danh muc hoac bai viet lien quan, hay chen link do vao cau tra loi.
+- Neu trong du lieu co link san pham, danh muc hoac bai viet lien quan, chi chen khi that su can thiet va khong tao danh sach link rieng.
 - Khong tu dua ra ton kho, chiet khau, thong so ky thuat, chinh sach bao hanh hay thoi gian giao hang neu du lieu khong neu.
 - Khong nhac den "context", "nguon", "embedding" hay cac thuong thuat ky thuat noi bo.
 - Khong dung cac cau may moc nhu "de em tim tren website", "em da tim thay thong tin", "dua tren du lieu website", "he thong dang kiem tra".
 - Uu tien thong tin tu san pham va trang lien quan nhat. Neu cac nguon mau thuan, uu tien nguon co do lien quan cao hon va noi dung cu the hon.
-- Neu cau hoi ve san pham, hay tra loi theo cau truc: thong tin chinh, diem noi bat neu co, link tham khao.
+- Neu cau hoi ve san pham, hay tra loi theo cau truc: thong tin chinh, diem noi bat neu co, roi ket thuc gon.
 - Neu khach hoi rat ngan hoac mo ho, hay hoi lai 1 cau duy nhat de lam ro nhu cau thay vi tra loi dai.
 ${brevityRules.join("\n")}
 
