@@ -5,7 +5,7 @@ dotenv.config();
 
 const apiKey = process.env.GEMINI_API_KEY;
 const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-const maxOutputTokens = Number(process.env.GEMINI_MAX_OUTPUT_TOKENS || 350);
+const maxOutputTokens = Number(process.env.GEMINI_MAX_OUTPUT_TOKENS || 550);
 
 if (!apiKey) {
   console.warn("Missing GEMINI_API_KEY in .env. Chat answer generation will fail.");
@@ -24,7 +24,19 @@ function cleanAnswer(text = "") {
     .trim();
 }
 
-function buildPrompt({ question, context }) {
+function buildPrompt({ question, context, concise = false }) {
+  const brevityRules = concise
+    ? [
+        "- Tra loi that ngan gon, toi da 3 cau ngan.",
+        "- Neu can chen link, chi chen toi da 2 link lien quan nhat.",
+        "- Khong mo dau dai dong, vao thang cau tra loi chinh."
+      ]
+    : [
+        "- Tra loi ngan gon, uu tien toi da 4 cau hoac 3 muc ngan.",
+        "- Neu can chen link, chi chen 1-2 link lien quan nhat, khong liet ke qua nhieu.",
+        "- Uu tien cau tra loi hoan chinh, tranh mo rong khong can thiet."
+      ];
+
   return `
 Ban la tro ly tu van cua Euro Door Hardware JSC, chuyen ho tro khach hang ve phu kien cua, khoa thong minh, gioang EPDM, keo silicone va vat tu nganh cua.
 
@@ -45,6 +57,7 @@ Nguyen tac tra loi:
 - Uu tien thong tin tu san pham va trang lien quan nhat. Neu cac nguon mau thuan, uu tien nguon co do lien quan cao hon va noi dung cu the hon.
 - Neu cau hoi ve san pham, hay tra loi theo cau truc: thong tin chinh, diem noi bat neu co, link tham khao.
 - Neu khach hoi rat ngan hoac mo ho, hay hoi lai 1 cau duy nhat de lam ro nhu cau thay vi tra loi dai.
+${brevityRules.join("\n")}
 
 DU LIEU WEBSITE:
 ${context}
@@ -56,7 +69,7 @@ Hay viet 1 cau tra loi cu the, mem mai, huu ich va bam sat du lieu.
   `.trim();
 }
 
-export async function generateAnswer({ question, context }) {
+export async function generateAnswer({ question, context, concise = false }) {
   if (!genAI) {
     throw new Error("Gemini API key is missing");
   }
@@ -71,7 +84,7 @@ export async function generateAnswer({ question, context }) {
     }
   });
 
-  const prompt = buildPrompt({ question, context });
+  const prompt = buildPrompt({ question, context, concise });
   const maxRetries = 3;
   const delays = [2000, 5000, 10000];
 

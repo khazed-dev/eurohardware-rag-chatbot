@@ -149,6 +149,36 @@ function buildFallbackReply(question, sourceGroups) {
   return `Chao anh/chi, ben em gui anh/chi thong tin tham khao phu hop nhat o day nha.${productLink}`;
 }
 
+function isLikelyTruncatedAnswer(answer = "") {
+  const text = String(answer).trim();
+
+  if (!text) {
+    return true;
+  }
+
+  if (/[.!?)]$/.test(text)) {
+    return false;
+  }
+
+  if (/[,:;*\-]$/.test(text)) {
+    return true;
+  }
+
+  if (/\*\*[^*]{0,80}$/.test(text)) {
+    return true;
+  }
+
+  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  const lastLine = lines.at(-1) || "";
+
+  if (lastLine.length > 0 && lastLine.length <= 32) {
+    return true;
+  }
+
+  const sentenceEndCount = (text.match(/[.!?]/g) || []).length;
+  return sentenceEndCount < 2 && text.length >= 40;
+}
+
 function compareSourceGroups(a, b, intent) {
   const aHasStrongProductSignal = a.source_type === "product" && (a.exactTokenBonus || 0) > 0;
   const bHasStrongProductSignal = b.source_type === "product" && (b.exactTokenBonus || 0) > 0;
@@ -537,6 +567,29 @@ export async function askRag(question) {
       context
     });
     timings.answer_generation = Date.now() - generationStartedAt;
+
+    if (isLikelyTruncatedAnswer(reply)) {
+      try {
+        const regenerationStartedAt = Date.now();
+        const retriedReply = await generateAnswer({
+          question: cleanQuestion,
+          context,
+          concise: true
+        });
+
+        if (!isLikelyTruncatedAnswer(retriedReply)) {
+          reply = retriedReply;
+        }
+
+        timings.answer_regeneration = Date.now() - regenerationStartedAt;
+      } catch (regenerationError) {
+        timings.answer_regeneration = timings.answer_regeneration || 0;
+
+        if (CHAT_DEBUG) {
+          console.warn("Answer regeneration skipped after error:", regenerationError.message);
+        }
+      }
+    }
   } catch (error) {
     const message = error.message || "";
     const isQuotaOrTemporaryError =
