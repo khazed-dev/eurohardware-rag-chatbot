@@ -9,7 +9,7 @@ const CHAT_DEBUG = process.env.CHAT_DEBUG === "true";
 const KEYWORD_SEARCH_LIMIT = Number(process.env.RAG_KEYWORD_SEARCH_LIMIT || 50);
 const SOURCE_CONTEXT_LIMIT = Number(process.env.RAG_SOURCE_CONTEXT_LIMIT || 2);
 const SOURCE_SNIPPET_CHAR_LIMIT = Number(process.env.RAG_SOURCE_SNIPPET_CHAR_LIMIT || 1200);
-const DEFAULT_HOTLINE = process.env.CONTACT_HOTLINE || "079 619 2091";
+const DEFAULT_HOTLINE = process.env.CONTACT_HOTLINE || "082 820 8218";
 
 const STOP_WORDS = new Set([
   "la",
@@ -150,18 +150,13 @@ function buildFallbackReply(question, sourceGroups) {
 }
 
 function isProductFocusedQuestion(question, sourceGroups = []) {
-  const normalizedQuestion = normalizeForSearch(question);
   const primarySource = sourceGroups[0];
 
   if (!primarySource || primarySource.source_type !== "product") {
     return false;
   }
 
-  if ((primarySource.exactTokenBonus || 0) > 0) {
-    return true;
-  }
-
-  return /ma|model|khoa|san pham|thong tin/.test(normalizedQuestion);
+  return true;
 }
 
 function formatProductFocusedReply(sourceGroup, generatedReply = "") {
@@ -178,11 +173,15 @@ function formatProductFocusedReply(sourceGroup, generatedReply = "") {
     .split(/(?<=[.!?])\s+/)
     .map((sentence) => sentence.trim())
     .filter(Boolean)
-    .filter((sentence) => !/^xem them|^tham khao|^lien he/i.test(sentence));
-  const summary = sentences[0] || `${sourceGroup.title} la san pham phu hop voi nhu cau anh/chi.`;
-  const productLink = sourceGroup.url ? ` Xem them: ${sourceGroup.url}` : "";
+    .filter((sentence) => !/^xem them|^tham khao|^lien he|^neu ban can/i.test(sentence));
+  const firstSentence = sentences[0] || "";
+  const shortSummary =
+    firstSentence && firstSentence.length <= 140
+      ? firstSentence
+      : `${sourceGroup.title} la san pham anh/chi co the tham khao cho nhu cau nay nha.`;
+  const productLink = sourceGroup.url ? ` Xem chi tiet tai: ${sourceGroup.url}` : "";
 
-  return normalizeWhitespace(`${summary}${productLink}`).trim();
+  return normalizeWhitespace(`${shortSummary}${productLink}`).trim();
 }
 
 function isLikelyTruncatedAnswer(answer = "") {
@@ -605,7 +604,7 @@ export async function askRag(question) {
   if (!sourceGroups.length) {
     return {
       reply:
-        "Da, hien em chua tim thay thong tin du sat tren website. Anh/chi co the de lai nhu cau cu the hoac lien he Hotline/Zalo 079 619 2091 de doi ngu Euro Hardware ho tro nhanh hon a.",
+        `Da, hien em chua tim thay thong tin du sat tren website. Anh/chi co the de lai nhu cau cu the hoac lien he Hotline/Zalo ${DEFAULT_HOTLINE} de doi ngu Euro Hardware ho tro nhanh hon a.`,
       sources: [],
       debug: {
         ...retrievalDebug,
