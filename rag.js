@@ -149,6 +149,42 @@ function buildFallbackReply(question, sourceGroups) {
   return `Chao anh/chi, ben em gui anh/chi thong tin tham khao phu hop nhat o day nha.${productLink}`;
 }
 
+function isProductFocusedQuestion(question, sourceGroups = []) {
+  const normalizedQuestion = normalizeForSearch(question);
+  const primarySource = sourceGroups[0];
+
+  if (!primarySource || primarySource.source_type !== "product") {
+    return false;
+  }
+
+  if ((primarySource.exactTokenBonus || 0) > 0) {
+    return true;
+  }
+
+  return /ma|model|khoa|san pham|thong tin/.test(normalizedQuestion);
+}
+
+function formatProductFocusedReply(sourceGroup, generatedReply = "") {
+  if (!sourceGroup || sourceGroup.source_type !== "product") {
+    return String(generatedReply || "").trim();
+  }
+
+  const cleanedReply = normalizeWhitespace(
+    String(generatedReply || "")
+      .replace(/\n+/g, " ")
+      .replace(/\s{2,}/g, " ")
+  );
+  const sentences = cleanedReply
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+    .filter((sentence) => !/^xem them|^tham khao|^lien he/i.test(sentence));
+  const summary = sentences[0] || `${sourceGroup.title} la san pham phu hop voi nhu cau anh/chi.`;
+  const productLink = sourceGroup.url ? ` Xem them: ${sourceGroup.url}` : "";
+
+  return normalizeWhitespace(`${summary}${productLink}`).trim();
+}
+
 function isLikelyTruncatedAnswer(answer = "") {
   const text = String(answer).trim();
 
@@ -585,15 +621,22 @@ export async function askRag(question) {
   const sourceDocuments = await fetchSourceContext(sourceGroups.map((group) => group.source_root));
   timings.source_context_fetch = Date.now() - sourceFetchStartedAt;
   const context = buildContext(sourceGroups, sourceDocuments);
+  const productFocused = isProductFocusedQuestion(cleanQuestion, sourceGroups);
   let reply;
 
   try {
     const generationStartedAt = Date.now();
     reply = await generateAnswer({
       question: cleanQuestion,
-      context
+      context,
+      concise: productFocused,
+      productFocused
     });
     timings.answer_generation = Date.now() - generationStartedAt;
+
+    if (productFocused) {
+      reply = formatProductFocusedReply(sourceGroups[0], reply);
+    }
 
     if (isLikelyTruncatedAnswer(reply)) {
       try {
@@ -601,11 +644,14 @@ export async function askRag(question) {
         const retriedReply = await generateAnswer({
           question: cleanQuestion,
           context,
-          concise: true
+          concise: true,
+          productFocused
         });
 
         if (!isLikelyTruncatedAnswer(retriedReply)) {
-          reply = retriedReply;
+          reply = productFocused
+            ? formatProductFocusedReply(sourceGroups[0], retriedReply)
+            : retriedReply;
         }
 
         timings.answer_regeneration = Date.now() - regenerationStartedAt;

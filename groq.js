@@ -10,7 +10,7 @@ const GROQ_CHAT_MODEL =
 const GROQ_TIMEOUT_MS = Number(process.env.GROQ_TIMEOUT_MS || 45000);
 const GROQ_MAX_RETRIES = Number(process.env.GROQ_MAX_RETRIES || 2);
 const GROQ_TEMPERATURE = Number(process.env.GROQ_TEMPERATURE || 0.4);
-const GROQ_MAX_TOKENS = Number(process.env.GROQ_MAX_TOKENS || 550);
+const GROQ_MAX_TOKENS = Number(process.env.GROQ_MAX_TOKENS || 220);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -151,13 +151,17 @@ async function requestGroq(prompt) {
   }
 }
 
-export async function generateAnswer({ question, context, concise = false }) {
+export async function generateAnswer({ question, context, concise = false, productFocused = false }) {
   const prompt = buildPrompt({ question, context, concise });
   let lastError;
 
   for (let attempt = 1; attempt <= GROQ_MAX_RETRIES; attempt += 1) {
     try {
-      return await requestGroq(prompt);
+      return await requestGroq(
+        productFocused
+          ? `${prompt}\n\nYEU CAU BO SUNG:\n- Vi day la cau hoi ve 1 san pham cu the, chi tra loi toi da 2 cau ngan.\n- Cau 1: mo ta san pham va 1-2 diem noi bat quan trong nhat.\n- Cau 2: chen duy nhat 1 link san pham de khach xem them.\n- Khong liet ke thong so theo bullet.\n- Khong them hotline neu khach chua hoi bao gia hay lien he.`
+          : prompt
+      );
     } catch (error) {
       lastError = error;
       const message = error?.message || "";
