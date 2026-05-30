@@ -10,7 +10,7 @@ const GROQ_CHAT_MODEL =
 const GROQ_TIMEOUT_MS = Number(process.env.GROQ_TIMEOUT_MS || 45000);
 const GROQ_MAX_RETRIES = Number(process.env.GROQ_MAX_RETRIES || 2);
 const GROQ_TEMPERATURE = Number(process.env.GROQ_TEMPERATURE || 0.4);
-const GROQ_MAX_TOKENS = Number(process.env.GROQ_MAX_TOKENS || 220);
+const GROQ_MAX_TOKENS = Number(process.env.GROQ_MAX_TOKENS || 360);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -159,7 +159,7 @@ export async function generateAnswer({ question, context, concise = false, produ
     try {
       return await requestGroq(
         productFocused
-          ? `${prompt}\n\nYEU CAU BO SUNG:\n- Vi day la cau hoi ve 1 san pham cu the, chi tra loi toi da 2 cau ngan.\n- Cau 1: mo ta san pham va 1-2 diem noi bat quan trong nhat.\n- Cau 2: chen duy nhat 1 link san pham de khach xem them.\n- Khong liet ke thong so theo bullet.\n- Khong them hotline neu khach chua hoi bao gia hay lien he.`
+          ? `${prompt}\n\nYEU CAU BO SUNG:\n- Vi day la cau hoi ve 1 san pham cu the, tra loi ngan gon nhu nhan vien cham soc khach hang dang nhan tin.\n- Uu tien 2 cau, toi da 3 cau ngan.\n- Neu co link san pham trong du lieu, hay chen 1 link san pham o cuoi cau tra loi de khach xem them.\n- Khong liet ke thong so theo bullet.\n- Khong them hotline neu khach chua hoi bao gia hay lien he.`
           : prompt
       );
     } catch (error) {

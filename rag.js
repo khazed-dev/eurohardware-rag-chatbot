@@ -174,14 +174,20 @@ function formatProductFocusedReply(sourceGroup, generatedReply = "") {
     .map((sentence) => sentence.trim())
     .filter(Boolean)
     .filter((sentence) => !/^xem them|^tham khao|^lien he|^neu ban can/i.test(sentence));
-  const firstSentence = sentences[0] || "";
-  const shortSummary =
-    firstSentence && firstSentence.length <= 140
-      ? firstSentence
-      : `${sourceGroup.title} la san pham anh/chi co the tham khao cho nhu cau nay nha.`;
+  const trimmedReply = sentences.slice(0, 3).join(" ");
   const productLink = sourceGroup.url ? ` Xem chi tiet tai: ${sourceGroup.url}` : "";
 
-  return normalizeWhitespace(`${shortSummary}${productLink}`).trim();
+  if (!trimmedReply) {
+    return normalizeWhitespace(
+      `${sourceGroup.title} la san pham anh/chi co the tham khao cho nhu cau nay nha.${productLink}`
+    ).trim();
+  }
+
+  if (sourceGroup.url && !trimmedReply.includes(sourceGroup.url)) {
+    return normalizeWhitespace(`${trimmedReply}${productLink}`).trim();
+  }
+
+  return trimmedReply.trim();
 }
 
 function isLikelyTruncatedAnswer(answer = "") {
@@ -511,6 +517,24 @@ function buildContext(sourceGroups = [], sourceDocuments = []) {
       );
 
       const combinedContent = documents.map((document) => document.content || "").join("\n\n");
+      const snippetLimit = group.source_type === "product" ? 700 : SOURCE_SNIPPET_CHAR_LIMIT;
+      const compactProductContext =
+        group.source_type === "product"
+          ? [
+              `[Nguon ${index + 1}]`,
+              `Tieu de: ${group.title || "Khong ro tieu de"}`,
+              `Loai: ${group.source_type || "unknown"}`,
+              group.url ? `Link: ${group.url}` : "",
+              "Tom tat uu tien:",
+              sanitizeSnippet(combinedContent, snippetLimit)
+            ]
+              .filter(Boolean)
+              .join("\n")
+          : null;
+
+      if (compactProductContext) {
+        return compactProductContext;
+      }
 
       return [
         `[Nguon ${index + 1}]`,
