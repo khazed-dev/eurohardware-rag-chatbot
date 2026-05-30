@@ -1,6 +1,6 @@
 import { supabase } from "./supabase.js";
 import { createEmbedding } from "./ollama.js";
-import { generateAnswer } from "./gemini.js";
+import { generateAnswer } from "./groq.js";
 import { sanitizeSnippet, normalizeWhitespace } from "./utils.js";
 
 const MATCH_COUNT = Number(process.env.RAG_MATCH_COUNT || 8);
@@ -614,10 +614,10 @@ export async function askRag(question) {
       message.includes("quota") ||
       message.includes("503") ||
       message.includes("Service Unavailable") ||
+      normalizedMessage.includes("groq answer generation failed") ||
       normalizedMessage.includes("ollama answer generation failed") ||
       normalizedMessage.includes("timeout") ||
       normalizedMessage.includes("econnrefused") ||
-      normalizedMessage.includes("model is loading") ||
       normalizedMessage.includes("unavailable");
 
     if (!isTemporaryAnswerError) {

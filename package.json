@@ -1,7 +1,7 @@
 {
   "name": "eurohardware-rag-chatbot",
   "version": "1.0.0",
-  "description": "RAG chatbot backend for Euro Hardware website using Ollama embeddings, Supabase pgvector and Gemini answer generation",
+  "description": "RAG chatbot backend for Euro Hardware website using Ollama embeddings, Supabase pgvector and Groq answer generation",
   "type": "module",
   "main": "server.js",
   "scripts": {

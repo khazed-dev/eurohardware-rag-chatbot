@@ -2,13 +2,15 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
-const OLLAMA_CHAT_MODEL =
-  process.env.OLLAMA_CHAT_MODEL || process.env.OLLAMA_MODEL || "qwen2.5:7b-instruct";
-const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 45000);
-const OLLAMA_MAX_RETRIES = Number(process.env.OLLAMA_MAX_RETRIES || 2);
-const OLLAMA_TEMPERATURE = Number(process.env.OLLAMA_TEMPERATURE || 0.4);
-const OLLAMA_NUM_PREDICT = Number(process.env.OLLAMA_NUM_PREDICT || 550);
+const GROQ_API_BASE_URL =
+  process.env.GROQ_API_BASE_URL || "https://api.groq.com/openai/v1";
+const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
+const GROQ_CHAT_MODEL =
+  process.env.GROQ_CHAT_MODEL || process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+const GROQ_TIMEOUT_MS = Number(process.env.GROQ_TIMEOUT_MS || 45000);
+const GROQ_MAX_RETRIES = Number(process.env.GROQ_MAX_RETRIES || 2);
+const GROQ_TEMPERATURE = Number(process.env.GROQ_TEMPERATURE || 0.4);
+const GROQ_MAX_TOKENS = Number(process.env.GROQ_MAX_TOKENS || 550);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -17,7 +19,7 @@ function sleep(ms) {
 function cleanAnswer(text = "") {
   return String(text)
     .replace(/\r/g, "")
-    .replace(/\n\s*Tham khảo thêm:\s*[\s\S]*$/i, "")
+    .replace(/\n\s*Tham kháº£o thÃªm:\s*[\s\S]*$/i, "")
     .replace(/\n\s*Tham khao them:\s*[\s\S]*$/i, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -70,54 +72,65 @@ Hay viet 1 cau tra loi cu the, mem mai, huu ich va bam sat du lieu.
   `.trim();
 }
 
-function isTemporaryOllamaError(message = "") {
+function isTemporaryGroqError(message = "") {
   return [
     "timeout",
     "timed out",
-    "econnrefused",
-    "socket hang up",
+    "429",
+    "rate limit",
+    "too many requests",
     "connection reset",
-    "model is loading",
+    "socket hang up",
     "try again",
     "unavailable",
-    "overloaded"
+    "overloaded",
+    "503"
   ].some((keyword) => message.toLowerCase().includes(keyword));
 }
 
-async function requestOllama(prompt) {
+async function requestGroq(prompt) {
+  if (!GROQ_API_KEY) {
+    throw new Error("Groq API key is missing. Please set GROQ_API_KEY in the environment.");
+  }
+
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
+  const timeoutId = setTimeout(() => controller.abort(), GROQ_TIMEOUT_MS);
 
   try {
-    const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
+    const response = await fetch(`${GROQ_API_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${GROQ_API_KEY}`
       },
       body: JSON.stringify({
-        model: OLLAMA_CHAT_MODEL,
-        prompt,
-        stream: false,
-        options: {
-          temperature: OLLAMA_TEMPERATURE,
-          num_predict: OLLAMA_NUM_PREDICT
-        }
+        model: GROQ_CHAT_MODEL,
+        messages: [
+          {
+            role: "user",
+            content: prompt
+          }
+        ],
+        temperature: GROQ_TEMPERATURE,
+        max_tokens: GROQ_MAX_TOKENS,
+        stream: false
       }),
       signal: controller.signal
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Ollama chat failed: ${errorText}`);
+      throw new Error(`Groq chat failed: ${errorText}`);
     }
 
     const data = await response.json();
+    const answer = data?.choices?.[0]?.message?.content;
 
-    if (!data.response) {
-      throw new Error("Ollama did not return generated text");
+    if (!answer) {
+      throw new Error("Groq did not return generated text");
     }
 
-    return cleanAnswer(data.response);
+    return cleanAnswer(answer);
   } finally {
     clearTimeout(timeoutId);
   }
@@ -127,20 +140,20 @@ export async function generateAnswer({ question, context, concise = false }) {
   const prompt = buildPrompt({ question, context, concise });
   let lastError;
 
-  for (let attempt = 1; attempt <= OLLAMA_MAX_RETRIES; attempt += 1) {
+  for (let attempt = 1; attempt <= GROQ_MAX_RETRIES; attempt += 1) {
     try {
-      return await requestOllama(prompt);
+      return await requestGroq(prompt);
     } catch (error) {
       lastError = error;
       const message = error?.message || "";
       const isAbort = error?.name === "AbortError";
 
-      if (attempt >= OLLAMA_MAX_RETRIES || (!isAbort && !isTemporaryOllamaError(message))) {
+      if (attempt >= GROQ_MAX_RETRIES || (!isAbort && !isTemporaryGroqError(message))) {
         break;
       }
 
       console.warn(
-        `Ollama temporary error. Retry ${attempt}/${OLLAMA_MAX_RETRIES} after ${1000 * attempt}ms`
+        `Groq temporary error. Retry ${attempt}/${GROQ_MAX_RETRIES} after ${1000 * attempt}ms`
       );
       await sleep(1000 * attempt);
     }
@@ -148,10 +161,10 @@ export async function generateAnswer({ question, context, concise = false }) {
 
   const reason =
     lastError?.name === "AbortError"
-      ? `timeout after ${OLLAMA_TIMEOUT_MS}ms`
+      ? `timeout after ${GROQ_TIMEOUT_MS}ms`
       : lastError?.message || "unknown error";
 
   throw new Error(
-    `Ollama answer generation failed for model "${OLLAMA_CHAT_MODEL}" at ${OLLAMA_BASE_URL}: ${reason}`
+    `Groq answer generation failed for model "${GROQ_CHAT_MODEL}" at ${GROQ_API_BASE_URL}: ${reason}`
   );
 }
