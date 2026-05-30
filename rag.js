@@ -1,14 +1,18 @@
 import { supabase } from "./supabase.js";
 import { createEmbedding } from "./ollama.js";
-import { generateAnswer } from "./groq.js";
+import { generateAnswer, getGroqDebugConfig } from "./groq.js";
 import { sanitizeSnippet, normalizeWhitespace } from "./utils.js";
 
 const MATCH_COUNT = Number(process.env.RAG_MATCH_COUNT || 8);
 const MIN_SIMILARITY = Number(process.env.RAG_MIN_SIMILARITY || 0.35);
 const CHAT_DEBUG = process.env.CHAT_DEBUG === "true";
 const KEYWORD_SEARCH_LIMIT = Number(process.env.RAG_KEYWORD_SEARCH_LIMIT || 50);
-const SOURCE_CONTEXT_LIMIT = Number(process.env.RAG_SOURCE_CONTEXT_LIMIT || 2);
-const SOURCE_SNIPPET_CHAR_LIMIT = Number(process.env.RAG_SOURCE_SNIPPET_CHAR_LIMIT || 1200);
+const SOURCE_CONTEXT_LIMIT = Number(
+  process.env.RAG_SOURCE_CONTEXT_LIMIT || process.env.MAX_CONTEXT_CHUNKS || 4
+);
+const SOURCE_SNIPPET_CHAR_LIMIT = Number(
+  process.env.RAG_SOURCE_SNIPPET_CHAR_LIMIT || process.env.MAX_CHARS_PER_CHUNK || 1200
+);
 const DEFAULT_HOTLINE = process.env.CONTACT_HOTLINE || "082 820 8218";
 
 const STOP_WORDS = new Set([
@@ -84,7 +88,19 @@ function detectIntent(question = "") {
       ),
     isCategoryIntent:
       /danh muc|nhom san pham|loai nao|dong nao|phan loai|giai phap/.test(normalized),
-    isContactIntent: /hotline|zalo|so dien thoai|lien he|tu van/.test(normalized),
+    isContactIntent: /hotline|zalo|so dien thoai|lien he/.test(normalized),
+    isUsageIntent: /huong dan|cach dung|su dung|lap dat|bao quan|van hanh/.test(normalized),
+    isAdviceIntent: /tu van|goi y|nen dung|phu hop|chon loai nao|chon mau nao/.test(normalized),
+    isRetailIntent: /ban le|mua le|chi ban si|ban si/.test(normalized),
+    isShippingIntent: /giao hang tinh|giao tinh|gui tinh|khu vuc nao|toan quoc|o xa/.test(normalized),
+    isQuoteInfoIntent:
+      /cung cap gi de bao gia|thong tin gi de bao gia|bao gia chinh xac|can cung cap gi/.test(
+        normalized
+      ),
+    isPolicyIntent:
+      /ban le|mua le|chi ban si|ban si|giao tinh|toan quoc|o xa|bao gia chinh xac|can cung cap gi/.test(
+        normalized
+      ),
     isTechnicalIntent:
       /thong so|kich thuoc|chat lieu|mau sac|do day|cau tao|phu hop|ung dung|dac diem/.test(
         normalized
@@ -100,7 +116,44 @@ function buildFallbackSourceKey(match = {}) {
   return match.url || `${match.source_type || "unknown"}::${match.title || "untitled"}`;
 }
 
+function extractUsefulContentLines(text = "") {
+  return String(text)
+    .split(/\n+/)
+    .map((line) => normalizeWhitespace(line))
+    .filter(Boolean)
+    .filter(
+      (line) =>
+        !/^(loai du lieu|tieu de|danh muc|gia \/ trang thai gia|link|sku|thuong hieu|the|tinh trang kho|thuoc tinh|noi dung):/i.test(
+          line
+        )
+    );
+}
+
+function buildSourceSummary(group, sourceDocuments = []) {
+  const combinedContent = sourceDocuments.map((document) => document.content || "").join("\n");
+  const usefulLines = extractUsefulContentLines(combinedContent);
+  const usefulText = normalizeWhitespace(usefulLines.join(" "));
+  const descriptiveSentences = usefulText
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+    .filter((sentence) => sentence.length >= 24)
+    .filter((sentence) => !/^(gia hien tai|gia niem yet|gia khuyen mai|gia lien he)/i.test(sentence));
+
+  return {
+    title: group.title || "Không rõ tiêu đề",
+    url: group.url || "",
+    sourceType: group.source_type || "unknown",
+    summary: descriptiveSentences.slice(0, 3).join(" "),
+    highlights: usefulLines.slice(0, 6)
+  };
+}
+
 function getSourceTypeBonus(intent, sourceType = "") {
+  if (intent.isPolicyIntent && sourceType === "page") {
+    return 20;
+  }
+
   if (intent.isPriceIntent && sourceType === "product") {
     return 24;
   }
@@ -133,20 +186,20 @@ function buildFallbackReply(question, sourceGroups) {
   const primarySource = sourceGroups[0];
 
   if (!primarySource) {
-    return `Chao anh/chi, hien thong tin em co chua du de tu van that sat nhu cau nay. Anh/chi co the de lai yeu cau cu the hon hoac lien he Hotline/Zalo ${DEFAULT_HOTLINE} de ben em ho tro nhanh va dung hon nha.`;
+    return `Chào anh/chị, hiện thông tin bên em có chưa đủ để tư vấn thật sát nhu cầu này. Anh/chị có thể để lại yêu cầu cụ thể hơn hoặc liên hệ Hotline/Zalo ${DEFAULT_HOTLINE} để bên em hỗ trợ nhanh và đúng hơn nhé.`;
   }
 
-  const productLink = primarySource.url ? `\nAnh/chi xem them tai day: ${primarySource.url}` : "";
+  const productLink = primarySource.url ? `\nAnh/chị xem thêm tại đây: ${primarySource.url}` : "";
 
   if (intent.isPriceIntent) {
-    return `Chao anh/chi, ben em co san pham "${primarySource.title}" nha. Hien muc gia tren website co the dang de theo hinh thuc tu van truc tiep, nen anh/chi vui long dang ky bao gia tai https://eurohardware.id.vn/bao-gia hoac lien he Hotline/Zalo ${DEFAULT_HOTLINE} de ben em gui bao gia chinh xac va nhanh hon.${productLink}`;
+    return `Chào anh/chị, bên em có sản phẩm "${primarySource.title}" nhé. Hiện mức giá trên website có thể đang để theo hình thức tư vấn trực tiếp, nên anh/chị vui lòng đăng ký báo giá tại https://eurohardware.id.vn/bao-gia hoặc liên hệ Hotline/Zalo ${DEFAULT_HOTLINE} để bên em gửi báo giá chính xác và nhanh hơn.${productLink}`;
   }
 
   if (primarySource.source_type === "product") {
-    return `Chao anh/chi, san pham phu hop voi nhu cau anh/chi la "${primarySource.title}" nha.${productLink}`;
+    return `Chào anh/chị, sản phẩm phù hợp với nhu cầu anh/chị là "${primarySource.title}" nhé.${productLink}`;
   }
 
-  return `Chao anh/chi, ben em gui anh/chi thong tin tham khao phu hop nhat o day nha.${productLink}`;
+  return `Chào anh/chị, bên em gửi anh/chị thông tin tham khảo phù hợp nhất ở đây nhé.${productLink}`;
 }
 
 function isProductFocusedQuestion(question, sourceGroups = []) {
@@ -168,18 +221,22 @@ function formatProductFocusedReply(sourceGroup, generatedReply = "") {
     String(generatedReply || "")
       .replace(/\n+/g, " ")
       .replace(/\s{2,}/g, " ")
+      .replace(/^cam on ban da gui cau hoi[^\n.:]*[:.]?\s*/i, "")
+      .replace(/^duoi day la cau tra loi cua toi[:.]?\s*/i, "")
+      .replace(/^cau tra loi[:.]?\s*/i, "")
   );
   const sentences = cleanedReply
     .split(/(?<=[.!?])\s+/)
     .map((sentence) => sentence.trim())
     .filter(Boolean)
-    .filter((sentence) => !/^xem them|^tham khao|^lien he|^neu ban can/i.test(sentence));
+    .filter((sentence) => !/^xem them|^tham khao|^lien he|^neu ban can/i.test(sentence))
+    .filter((sentence) => !sentence.includes("?"));
   const trimmedReply = sentences.slice(0, 3).join(" ");
-  const productLink = sourceGroup.url ? ` Xem chi tiet tai: ${sourceGroup.url}` : "";
+  const productLink = sourceGroup.url ? ` Xem chi tiết tại: ${sourceGroup.url}` : "";
 
   if (!trimmedReply) {
     return normalizeWhitespace(
-      `${sourceGroup.title} la san pham anh/chi co the tham khao cho nhu cau nay nha.${productLink}`
+      `${sourceGroup.title} là sản phẩm anh/chị có thể tham khảo cho nhu cầu này nhé.${productLink}`
     ).trim();
   }
 
@@ -188,6 +245,143 @@ function formatProductFocusedReply(sourceGroup, generatedReply = "") {
   }
 
   return trimmedReply.trim();
+}
+
+function buildDeterministicProductReply(sourceGroup, sourceDocuments = []) {
+  if (!sourceGroup || sourceGroup.source_type !== "product") {
+    return "";
+  }
+
+  const combinedContent = sourceDocuments
+    .map((document) => document.content || "")
+    .join("\n");
+
+  const usefulLines = extractUsefulContentLines(combinedContent);
+
+  const primaryLine = usefulLines.find((line) => line.length >= 30 && !/[):]$/.test(line)) || "";
+  const usefulText = normalizeWhitespace(usefulLines.join(" "));
+  const descriptiveSentences = usefulText
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+    .filter((sentence) => sentence.length >= 24)
+    .filter((sentence) => !/^(gia hien tai|gia niem yet|gia khuyen mai|gia lien he)/i.test(sentence));
+
+  const primarySentence = descriptiveSentences[0] || primaryLine;
+  const shortDescription =
+    primarySentence && primarySentence.length <= 180
+      ? primarySentence
+      : `${sourceGroup.title} là sản phẩm anh/chị có thể tham khảo cho nhu cầu này nhé.`;
+  const productLink = sourceGroup.url ? ` Xem chi tiết tại: ${sourceGroup.url}` : "";
+
+  return normalizeWhitespace(`${shortDescription}${productLink}`).trim();
+}
+
+function buildContactReply() {
+  return `Anh/chị có thể liên hệ Hotline/Zalo ${DEFAULT_HOTLINE} để bên em hỗ trợ nhanh nhé.`;
+}
+
+function buildRetailReply() {
+  return "Bên em có phục vụ cả khách mua lẻ và khách mua số lượng lớn nhé. Nếu anh/chị mua thường xuyên hoặc cần số lượng nhiều, bên em có thể tư vấn mức giá phù hợp hơn qua Hotline/Zalo 082 820 8218.";
+}
+
+function buildShippingReply() {
+  return "Bên em phục vụ khách hàng tại Đà Nẵng và nhiều tỉnh thành khác trên toàn quốc nhé. Nếu anh/chị ở xa, bên em vẫn hỗ trợ tư vấn, báo giá và gửi hàng theo hình thức vận chuyển phù hợp.";
+}
+
+function buildPriceReply(sourceGroup) {
+  const productLink = sourceGroup?.url ? ` Xem sản phẩm tại: ${sourceGroup.url}` : "";
+  const productName = sourceGroup?.title ? `${sourceGroup.title}` : "san pham nay";
+  return `Anh/chị vui lòng đăng ký báo giá tại https://eurohardware.id.vn/bao-gia hoặc liên hệ Hotline/Zalo ${DEFAULT_HOTLINE} để bên em gửi báo giá cho ${productName} nhé.${productLink}`;
+}
+
+function buildQuoteInfoReply() {
+  return "Để bên em báo giá chính xác, anh/chị giúp gửi tên sản phẩm, mã sản phẩm nếu có, số lượng cần mua, khu vực giao hàng và thông tin công trình hoặc hệ cửa nếu liên quan nhé. Nếu là phụ kiện kỹ thuật, anh/chị gửi thêm hình ảnh, bản vẽ hoặc mẫu cũ thì bên em tư vấn sát hơn.";
+}
+
+function buildUsageReply(sourceGroup, sourceDocuments = []) {
+  const productReply = buildDeterministicProductReply(sourceGroup, sourceDocuments);
+
+  if (productReply) {
+    return `${productReply} Nếu anh/chị cần hướng dẫn sử dụng hoặc lắp đặt chi tiết hơn, bên em hỗ trợ qua Hotline/Zalo ${DEFAULT_HOTLINE} nhé.`;
+  }
+
+  return `Hiện website chưa có hướng dẫn sử dụng chi tiết cho sản phẩm này. Anh/chị liên hệ Hotline/Zalo ${DEFAULT_HOTLINE} để bên em hỗ trợ nhanh nhé.`;
+}
+
+function buildAdviceReply(sourceGroups = []) {
+  const primarySource = sourceGroups[0];
+
+  if (primarySource?.source_type === "product") {
+    const productLink = primarySource.url ? ` Xem chi tiết tại: ${primarySource.url}` : "";
+    return `${primarySource.title} là phương án anh/chị có thể tham khảo cho nhu cầu này nhé.${productLink}`;
+  }
+
+  return `Anh/chị cho bên em biết thêm loại cửa, chất liệu và nhu cầu sử dụng để bên em tư vấn sát hơn nhé. Hoặc anh/chị liên hệ Hotline/Zalo ${DEFAULT_HOTLINE} để bên em hỗ trợ nhanh.`;
+}
+
+function buildClarifyingAdviceReply(sourceGroups = []) {
+  const primarySource = sourceGroups[0];
+  const productHint = primarySource?.url ? ` Anh/chị cũng có thể tham khảo trước tại: ${primarySource.url}` : "";
+  return `Để bên em tư vấn sát hơn, anh/chị giúp bên em 1 thông tin quan trọng nhất: loại cửa hoặc hệ cửa anh/chị đang dùng là gì nhé?${productHint}`;
+}
+
+function scoreFaqLine(questionKeywords = [], strongTokens = [], line = "") {
+  const normalizedLine = normalizeForSearch(line);
+
+  let score = questionKeywords.reduce((total, keyword) => {
+    if (!keyword || !normalizedLine.includes(keyword)) {
+      return total;
+    }
+
+    return total + (keyword.length >= 4 ? 3 : 1);
+  }, 0);
+
+  strongTokens.forEach((token) => {
+    if (normalizedLine.includes(token)) {
+      score += 6;
+    }
+  });
+
+  return score;
+}
+
+function buildFaqStyleReply(question, sourceGroups = [], sourceDocuments = []) {
+  const primarySource = sourceGroups[0];
+
+  if (!primarySource || primarySource.source_type === "product") {
+    return "";
+  }
+
+  const questionKeywords = extractKeywords(question);
+  const strongTokens = extractStrongTokens(question);
+  const sourceRoot = primarySource.source_root;
+  const relevantDocuments = sourceDocuments.filter(
+    (document) => getSourceRoot(document.source_id || "") === sourceRoot
+  );
+  const usefulLines = extractUsefulContentLines(
+    relevantDocuments.map((document) => document.content || "").join("\n")
+  ).filter((line) => line.length >= 24);
+
+  const rankedLines = usefulLines
+    .map((line) => ({
+      line,
+      score: scoreFaqLine(questionKeywords, strongTokens, line)
+    }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3)
+    .map((item) => item.line);
+
+  if (!rankedLines.length) {
+    return "";
+  }
+
+  const uniqueLines = Array.from(new Set(rankedLines));
+  const answer = uniqueLines.slice(0, 2).join(" ");
+  const sourceLink = primarySource.url ? ` Xem them tai: ${primarySource.url}` : "";
+
+  return normalizeWhitespace(`${answer}${sourceLink}`).trim();
 }
 
 function isLikelyTruncatedAnswer(answer = "") {
@@ -515,42 +709,48 @@ function buildContext(sourceGroups = [], sourceDocuments = []) {
       const documents = (documentsBySourceRoot.get(group.source_root) || []).sort((a, b) =>
         a.source_id.localeCompare(b.source_id)
       );
-
-      const combinedContent = documents.map((document) => document.content || "").join("\n\n");
-      const snippetLimit = group.source_type === "product" ? 700 : SOURCE_SNIPPET_CHAR_LIMIT;
-      const compactProductContext =
-        group.source_type === "product"
-          ? [
-              `[Nguon ${index + 1}]`,
-              `Tieu de: ${group.title || "Khong ro tieu de"}`,
-              `Loai: ${group.source_type || "unknown"}`,
-              group.url ? `Link: ${group.url}` : "",
-              "Tom tat uu tien:",
-              sanitizeSnippet(combinedContent, snippetLimit)
-            ]
-              .filter(Boolean)
-              .join("\n")
-          : null;
-
-      if (compactProductContext) {
-        return compactProductContext;
-      }
+      const sourceSummary = buildSourceSummary(group, documents);
 
       return [
         `[Nguon ${index + 1}]`,
-        `Tieu de: ${group.title || "Khong ro tieu de"}`,
-        `Loai: ${group.source_type || "unknown"}`,
-        group.url ? `Link: ${group.url}` : "",
+        `Tieu de: ${sourceSummary.title}`,
+        `Loai: ${sourceSummary.sourceType}`,
+        sourceSummary.url ? `Link: ${sourceSummary.url}` : "",
         `Do lien quan vector: ${group.similarity.toFixed(3)}`,
         `Diem tu khoa: ${group.keywordScore}`,
-        `So chunk lien quan: ${documents.length}`,
-        "Noi dung tong hop:",
-        sanitizeSnippet(combinedContent, SOURCE_SNIPPET_CHAR_LIMIT)
+        "Tom tat nhanh:",
+        sanitizeSnippet(sourceSummary.summary, 420),
+        sourceSummary.highlights.length ? "Chi tiet uu tien:" : "",
+        sourceSummary.highlights.length
+          ? sourceSummary.highlights
+              .slice(0, group.source_type === "product" ? 4 : 5)
+              .map((line) => `- ${sanitizeSnippet(line, 220)}`)
+              .join("\n")
+          : ""
       ]
         .filter(Boolean)
         .join("\n");
     })
     .join("\n\n");
+}
+
+function buildQuestionGuidance(question = "", sourceGroups = []) {
+  const intent = detectIntent(question);
+  const primarySource = sourceGroups[0];
+
+  return [
+    "[Huong dan cho model]",
+    intent.isPriceIntent
+      ? "- Day la cau hoi ve bao gia. Neu website khong co gia cu the, huong khach ve trang bao gia va hotline."
+      : "- Day la cau hoi can tra loi dua tren noi dung website duoc chon.",
+    primarySource?.source_type === "product"
+      ? "- Neu nguon chinh la product, uu tien mo ta ngan gon san pham va chen 1 link san pham."
+      : "- Neu nguon chinh la page/post/category, uu tien tom tat y chinh gan nhat voi cau hoi.",
+    intent.isAdviceIntent
+      ? "- Neu cau hoi dang mang tinh tu van, neu thong tin chua du thi hoi lai 1 thong tin quan trong nhat."
+      : "- Khong mo rong sang noi dung khong lien quan.",
+    `- Cau hoi goc: ${question}`
+  ].join("\n");
 }
 
 function buildRetrievalDebug(question, vectorMatches, keywordMatches, sourceGroups, timings = {}) {
@@ -628,10 +828,11 @@ export async function askRag(question) {
   if (!sourceGroups.length) {
     return {
       reply:
-        `Da, hien em chua tim thay thong tin du sat tren website. Anh/chi co the de lai nhu cau cu the hoac lien he Hotline/Zalo ${DEFAULT_HOTLINE} de doi ngu Euro Hardware ho tro nhanh hon a.`,
+        `Dạ, hiện bên em chưa tìm thấy thông tin đủ sát trên website. Anh/chị có thể để lại nhu cầu cụ thể hoặc liên hệ Hotline/Zalo ${DEFAULT_HOTLINE} để đội ngũ Euro Hardware hỗ trợ nhanh hơn ạ.`,
       sources: [],
       debug: {
         ...retrievalDebug,
+        answer_mode: "no_source_match",
         timings_ms: {
           ...timings,
           total: Date.now() - requestStartedAt
@@ -643,9 +844,192 @@ export async function askRag(question) {
   const sourceFetchStartedAt = Date.now();
   const sourceDocuments = await fetchSourceContext(sourceGroups.map((group) => group.source_root));
   timings.source_context_fetch = Date.now() - sourceFetchStartedAt;
-  const context = buildContext(sourceGroups, sourceDocuments);
+  const context = [buildQuestionGuidance(cleanQuestion, sourceGroups), buildContext(sourceGroups, sourceDocuments)]
+    .filter(Boolean)
+    .join("\n\n");
+  const intent = detectIntent(cleanQuestion);
   const productFocused = isProductFocusedQuestion(cleanQuestion, sourceGroups);
+  const primarySourceDocuments = sourceDocuments.filter(
+    (document) => getSourceRoot(document.source_id || "") === sourceGroups[0]?.source_root
+  );
   let reply;
+
+  if (intent.isRetailIntent) {
+    timings.answer_generation = 0;
+    timings.total = Date.now() - requestStartedAt;
+
+    return {
+      reply: buildRetailReply(),
+      sources: sourceGroups[0]?.url
+        ? [
+            {
+              title: sourceGroups[0].title,
+              url: sourceGroups[0].url,
+              source_type: sourceGroups[0].source_type,
+              similarity: sourceGroups[0].similarity
+            }
+          ]
+        : [],
+      debug: {
+        ...retrievalDebug,
+        answer_mode: "deterministic_retail",
+        provider: getGroqDebugConfig(),
+        timings_ms: {
+          ...timings
+        }
+      }
+    };
+  }
+
+  if (intent.isShippingIntent) {
+    timings.answer_generation = 0;
+    timings.total = Date.now() - requestStartedAt;
+
+    return {
+      reply: buildShippingReply(),
+      sources: sourceGroups[0]?.url
+        ? [
+            {
+              title: sourceGroups[0].title,
+              url: sourceGroups[0].url,
+              source_type: sourceGroups[0].source_type,
+              similarity: sourceGroups[0].similarity
+            }
+          ]
+        : [],
+      debug: {
+        ...retrievalDebug,
+        answer_mode: "deterministic_shipping",
+        provider: getGroqDebugConfig(),
+        timings_ms: {
+          ...timings
+        }
+      }
+    };
+  }
+
+  if (intent.isQuoteInfoIntent) {
+    timings.answer_generation = 0;
+    timings.total = Date.now() - requestStartedAt;
+
+    return {
+      reply: buildQuoteInfoReply(),
+      sources: sourceGroups[0]?.url
+        ? [
+            {
+              title: sourceGroups[0].title,
+              url: sourceGroups[0].url,
+              source_type: sourceGroups[0].source_type,
+              similarity: sourceGroups[0].similarity
+            }
+          ]
+        : [],
+      debug: {
+        ...retrievalDebug,
+        answer_mode: "deterministic_quote_info",
+        provider: getGroqDebugConfig(),
+        timings_ms: {
+          ...timings
+        }
+      }
+    };
+  }
+
+  if (intent.isContactIntent && !productFocused && !intent.isPriceIntent) {
+    timings.answer_generation = 0;
+    timings.total = Date.now() - requestStartedAt;
+
+    return {
+      reply: buildContactReply(),
+      sources: [],
+      debug: {
+        ...retrievalDebug,
+        answer_mode: "deterministic_contact",
+        provider: getGroqDebugConfig(),
+        timings_ms: {
+          ...timings
+        }
+      }
+    };
+  }
+
+  if (intent.isPriceIntent) {
+    timings.answer_generation = 0;
+    timings.total = Date.now() - requestStartedAt;
+
+    return {
+      reply: buildPriceReply(sourceGroups[0]),
+      sources: dedupeSources(
+        sourceGroups.map((item) => ({
+          title: item.title,
+          url: item.url,
+          source_type: item.source_type,
+          similarity: item.similarity
+        }))
+      ),
+      debug: {
+        ...retrievalDebug,
+        answer_mode: "deterministic_price",
+        provider: getGroqDebugConfig(),
+        timings_ms: {
+          ...timings
+        }
+      }
+    };
+  }
+
+  if (productFocused) {
+    reply = intent.isUsageIntent
+      ? buildUsageReply(sourceGroups[0], primarySourceDocuments)
+      : buildDeterministicProductReply(sourceGroups[0], primarySourceDocuments);
+    timings.answer_generation = 0;
+    timings.total = Date.now() - requestStartedAt;
+
+    return {
+      reply,
+      sources: dedupeSources(
+        sourceGroups.map((item) => ({
+          title: item.title,
+          url: item.url,
+          source_type: item.source_type,
+          similarity: item.similarity
+        }))
+      ),
+      debug: {
+        ...retrievalDebug,
+        answer_mode: intent.isUsageIntent ? "deterministic_usage" : "deterministic_product",
+        provider: getGroqDebugConfig(),
+        timings_ms: {
+          ...timings
+        }
+      }
+    };
+  }
+
+  if (intent.isAdviceIntent) {
+    timings.answer_generation = 0;
+    timings.total = Date.now() - requestStartedAt;
+
+    return {
+      reply: buildClarifyingAdviceReply(sourceGroups),
+      sources: dedupeSources(
+        sourceGroups.map((item) => ({
+          title: item.title,
+          url: item.url,
+          source_type: item.source_type,
+          similarity: item.similarity
+        }))
+      ),
+      debug: {
+        ...retrievalDebug,
+        answer_mode: "clarifying_advice",
+        provider: getGroqDebugConfig(),
+        timings_ms: {
+          ...timings
+        }
+      }
+    };
+  }
 
   try {
     const generationStartedAt = Date.now();
@@ -656,10 +1040,6 @@ export async function askRag(question) {
       productFocused
     });
     timings.answer_generation = Date.now() - generationStartedAt;
-
-    if (productFocused) {
-      reply = formatProductFocusedReply(sourceGroups[0], reply);
-    }
 
     if (isLikelyTruncatedAnswer(reply)) {
       try {
@@ -672,9 +1052,7 @@ export async function askRag(question) {
         });
 
         if (!isLikelyTruncatedAnswer(retriedReply)) {
-          reply = productFocused
-            ? formatProductFocusedReply(sourceGroups[0], retriedReply)
-            : retriedReply;
+          reply = retriedReply;
         }
 
         timings.answer_regeneration = Date.now() - regenerationStartedAt;
@@ -726,6 +1104,8 @@ export async function askRag(question) {
     sources,
     debug: {
       ...retrievalDebug,
+      answer_mode: productFocused ? "product_llm" : "general_llm",
+      provider: getGroqDebugConfig(),
       timings_ms: timings
     }
   };

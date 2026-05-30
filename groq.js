@@ -3,14 +3,15 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const GROQ_API_BASE_URL =
-  process.env.GROQ_API_BASE_URL || "https://api.groq.com/openai/v1";
+  process.env.GROQ_API_BASE_URL || process.env.GROQ_BASE_URL || "https://api.groq.com/openai/v1";
 const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
 const GROQ_CHAT_MODEL =
-  process.env.GROQ_CHAT_MODEL || process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
-const GROQ_TIMEOUT_MS = Number(process.env.GROQ_TIMEOUT_MS || 45000);
-const GROQ_MAX_RETRIES = Number(process.env.GROQ_MAX_RETRIES || 2);
-const GROQ_TEMPERATURE = Number(process.env.GROQ_TEMPERATURE || 0.4);
-const GROQ_MAX_TOKENS = Number(process.env.GROQ_MAX_TOKENS || 360);
+  process.env.GROQ_CHAT_MODEL || process.env.GROQ_MODEL || "qwen/qwen3-32b";
+const GROQ_TIMEOUT_MS = Number(process.env.GROQ_TIMEOUT_MS || 20000);
+const GROQ_MAX_RETRIES = Number(process.env.GROQ_MAX_RETRIES || 1);
+const GROQ_TEMPERATURE = Number(process.env.GROQ_TEMPERATURE || process.env.TEMPERATURE || 0.2);
+const GROQ_MAX_TOKENS = Number(process.env.GROQ_MAX_TOKENS || process.env.MAX_TOKENS || 550);
+const CHAT_DEBUG = process.env.CHAT_DEBUG === "true";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -19,10 +20,14 @@ function sleep(ms) {
 function cleanAnswer(text = "") {
   return String(text)
     .replace(/\r/g, "")
+    .replace(/<think>[\s\S]*?<\/think>\s*/gi, "")
     .replace(/^(chao|xin chao|cam on ban da lien he)[^\n]*\n+/i, "")
+    .replace(/^cam on ban da gui cau hoi[^\n.:]*[:.]?\s*/i, "")
+    .replace(/^duoi day la cau tra loi cua toi[:.]?\s*/i, "")
     .replace(/^cam on ban da cung cap thong tin[^\n]*\n+/i, "")
     .replace(/^toi se tra loi cau hoi cua ban[^\n]*\n+/i, "")
     .replace(/^\*\*cau tra loi:\*\*\s*/i, "")
+    .replace(/^cau tra loi[:.]?\s*/i, "")
     .replace(/\n\s*tham\s*khao\s*them\s*:?\s*[\s\S]*$/i, "")
     .replace(/\n\s*\*\*thong tin lien quan:\*\*[\s\S]*$/i, "")
     .replace(/\n\s*\*\*thong tin chi tiet:\*\*\s*/i, "\n")
@@ -101,6 +106,15 @@ function isTemporaryGroqError(message = "") {
 async function requestGroq(prompt) {
   if (!GROQ_API_KEY) {
     throw new Error("Groq API key is missing. Please set GROQ_API_KEY in the environment.");
+  }
+
+  if (CHAT_DEBUG) {
+    console.log("Groq request config:", JSON.stringify({
+      model: GROQ_CHAT_MODEL,
+      base_url: GROQ_API_BASE_URL,
+      temperature: GROQ_TEMPERATURE,
+      max_tokens: GROQ_MAX_TOKENS
+    }));
   }
 
   const controller = new AbortController();
@@ -186,4 +200,14 @@ export async function generateAnswer({ question, context, concise = false, produ
   throw new Error(
     `Groq answer generation failed for model "${GROQ_CHAT_MODEL}" at ${GROQ_API_BASE_URL}: ${reason}`
   );
+}
+
+export function getGroqDebugConfig() {
+  return {
+    provider: "groq",
+    model: GROQ_CHAT_MODEL,
+    base_url: GROQ_API_BASE_URL,
+    temperature: GROQ_TEMPERATURE,
+    max_tokens: GROQ_MAX_TOKENS
+  };
 }

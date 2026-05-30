@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { crawlWebsite } from "./crawler.js";
 import { askRag } from "./rag.js";
+import { getGroqDebugConfig } from "./groq.js";
 
 dotenv.config();
 
@@ -85,6 +86,7 @@ app.post("/chat", async (req, res) => {
       console.log("Chat debug:", JSON.stringify({
         message,
         elapsed_ms: Date.now() - startedAt,
+        provider: getGroqDebugConfig(),
         sources: result.sources,
         retrieval: result.debug
       }, null, 2));
