@@ -115,8 +115,12 @@ function formatPrice(product) {
   const regularPrice = product.prices?.regular_price;
   const salePrice = product.prices?.sale_price;
   const currencyCode = product.prices?.currency_code || "VND";
+  const hasMeaningfulPrice = [price, regularPrice, salePrice].some((value) => {
+    const normalizedValue = Number(String(value || "").replace(/[^\d.-]/g, ""));
+    return Number.isFinite(normalizedValue) && normalizedValue > 0;
+  });
 
-  if (price) {
+  if (price && hasMeaningfulPrice) {
     const parts = [`Gia hien tai: ${price} ${currencyCode}`];
 
     if (regularPrice && regularPrice !== price) {
@@ -130,7 +134,7 @@ function formatPrice(product) {
     return parts.join(" | ");
   }
 
-  return "Gia lien he";
+  return "";
 }
 
 function buildProductContent(product, title, url, categories) {

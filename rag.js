@@ -386,7 +386,7 @@ function groupMatchesBySource(question, scoredMatches = []) {
     existing.chunks.push(match);
   }
 
-  return Array.from(grouped.values())
+  const rankedGroups = Array.from(grouped.values())
     .sort((a, b) => compareSourceGroups(a, b, intent))
     .filter((group) => {
       if (strongTokens.length && group.source_type === "product" && group.exactTokenBonus > 0) {
@@ -417,6 +417,18 @@ function groupMatchesBySource(question, scoredMatches = []) {
         group.rerankScore >= all[0].rerankScore * 0.65
       );
     });
+
+  const primaryGroup = rankedGroups[0];
+
+  if (
+    primaryGroup &&
+    primaryGroup.source_type === "product" &&
+    (primaryGroup.exactTokenBonus || 0) > 0
+  ) {
+    return rankedGroups.filter((group) => group.source_root === primaryGroup.source_root);
+  }
+
+  return rankedGroups;
 }
 
 async function fetchSourceContext(sourceRoots = []) {

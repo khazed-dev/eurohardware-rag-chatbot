@@ -19,8 +19,13 @@ function sleep(ms) {
 function cleanAnswer(text = "") {
   return String(text)
     .replace(/\r/g, "")
-    .replace(/\n\s*Tham kháº£o thÃªm:\s*[\s\S]*$/i, "")
-    .replace(/\n\s*Tham khao them:\s*[\s\S]*$/i, "")
+    .replace(/^(chao|xin chao|cam on ban da lien he)[^\n]*\n+/i, "")
+    .replace(/^cam on ban da cung cap thong tin[^\n]*\n+/i, "")
+    .replace(/^toi se tra loi cau hoi cua ban[^\n]*\n+/i, "")
+    .replace(/^\*\*cau tra loi:\*\*\s*/i, "")
+    .replace(/\n\s*tham\s*khao\s*them\s*:?\s*[\s\S]*$/i, "")
+    .replace(/\n\s*\*\*thong tin lien quan:\*\*[\s\S]*$/i, "")
+    .replace(/\n\s*\*\*thong tin chi tiet:\*\*\s*/i, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -31,13 +36,18 @@ function buildPrompt({ question, context, concise = false }) {
         "- Tra loi that ngan gon, toi da 3 cau ngan.",
         "- Khong tao muc 'Tham khao them' hoac danh sach link o cuoi cau tra loi.",
         "- Neu can nhac link, chi nhac toi da 1 link va chen tu nhien trong 1 cau.",
-        "- Khong mo dau dai dong, vao thang cau tra loi chinh."
+        "- Khong mo dau dai dong, vao thang cau tra loi chinh.",
+        "- Khong chao hoi, khong cam on, khong mo dau kieu tong dai cham soc khach hang.",
+        "- Khong lap lai ten san pham nhieu lan, khong tao cac tieu de nhu 'Cau tra loi', 'Thong tin chi tiet', 'Thong tin lien quan'."
       ]
     : [
         "- Tra loi ngan gon, uu tien toi da 4 cau hoac 3 muc ngan.",
         "- Khong tao muc 'Tham khao them', khong danh so 1. 2. 3., khong liet ke danh sach link o cuoi.",
         "- Neu can chen link, chi nhac toi da 1 link lien quan nhat va chen tu nhien trong cau.",
-        "- Uu tien cau tra loi hoan chinh, tranh mo rong khong can thiet."
+        "- Uu tien cau tra loi hoan chinh, tranh mo rong khong can thiet.",
+        "- Khong chao hoi, khong cam on, khong tu gioi thieu, khong noi 'toi se tra loi' hay 'dua tren thong tin da cung cap'.",
+        "- Neu cau hoi dang nham den 1 san pham cu the, chi tra loi ve dung san pham do; khong mo rong sang gioi thieu chung ve cong ty hay cac san pham khac.",
+        "- Khong tao cac tieu de nhu 'Cau tra loi', 'Thong tin chi tiet', 'Thong tin lien quan'."
       ];
 
   return `
@@ -55,7 +65,7 @@ Nguyen tac tra loi:
 - Neu khach hoi bao gia, luon gui link dang ky nhan bao gia: https://eurohardware.id.vn/bao-gia
 - Neu trong du lieu co link san pham, danh muc hoac bai viet lien quan, chi chen khi that su can thiet va khong tao danh sach link rieng.
 - Khong tu dua ra ton kho, chiet khau, thong so ky thuat, chinh sach bao hanh hay thoi gian giao hang neu du lieu khong neu.
-- Khong nhac den "context", "nguon", "embedding" hay cac thuong thuat ky thuat noi bo.
+- Khong nhac den "context", "nguon", "embedding" hay cac thuat ngu ky thuat noi bo.
 - Khong dung cac cau may moc nhu "de em tim tren website", "em da tim thay thong tin", "dua tren du lieu website", "he thong dang kiem tra".
 - Uu tien thong tin tu san pham va trang lien quan nhat. Neu cac nguon mau thuan, uu tien nguon co do lien quan cao hon va noi dung cu the hon.
 - Neu cau hoi ve san pham, hay tra loi theo cau truc: thong tin chinh, diem noi bat neu co, roi ket thuc gon.
@@ -106,6 +116,11 @@ async function requestGroq(prompt) {
       body: JSON.stringify({
         model: GROQ_CHAT_MODEL,
         messages: [
+          {
+            role: "system",
+            content:
+              "Ban la nhan vien tu van san pham cua Euro Hardware. Tra loi ngan gon, dung trong tam, khong van mau CSKH, khong cam on, khong liet ke link hay muc tham khao o cuoi."
+          },
           {
             role: "user",
             content: prompt
