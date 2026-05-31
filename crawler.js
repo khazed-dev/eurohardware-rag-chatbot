@@ -9,7 +9,8 @@ import {
   buildChunkedDocuments,
   normalizeWhitespace,
   sanitizeText,
-  cleanExtractedContent
+  cleanExtractedContent,
+  extractStructuredHtmlContent
 } from "./utils.js";
 
 dotenv.config();
@@ -138,8 +139,8 @@ function formatPrice(product) {
 }
 
 function buildProductContent(product, title, url, categories) {
-  const shortDescription = cleanExtractedContent(stripHtml(product.short_description || ""));
-  const description = cleanExtractedContent(stripHtml(product.description || ""));
+  const shortDescription = cleanProductSection(product.short_description || "");
+  const description = cleanProductSection(product.description || "");
   const brand = joinValues(product.brands?.map((brandItem) => brandItem.name) || []);
   const tags = joinValues(product.tags?.map((tag) => tag.name) || []);
   const attributes = Array.isArray(product.attributes)
@@ -174,6 +175,36 @@ function buildProductContent(product, title, url, categories) {
   return normalizeWhitespace(content);
 }
 
+function cleanProductSection(html = "") {
+  const cleaned = extractStructuredHtmlContent(html);
+  const lines = cleaned
+    .split(/\n+/)
+    .map((line) => normalizeWhitespace(line))
+    .filter(Boolean)
+    .filter((line) => {
+      const normalizedLine = normalizeWhitespace(line)
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "");
+
+      if (/^(tong don|chiet khau|duoi \d+|tu \d+ den \d+|tren \d+)/.test(normalizedLine)) {
+        return false;
+      }
+
+      if (/^\d+%$/.test(normalizedLine)) {
+        return false;
+      }
+
+      if (/^(hinh anh thuc te|ma dung cu:|ma san pham \(sku\):)$/i.test(normalizedLine)) {
+        return false;
+      }
+
+      return true;
+    });
+
+  return normalizeWhitespace(lines.join("\n"));
+}
+
 function mapProduct(product) {
   const title = stripHtml(product.name || "");
   const url = product.permalink || product.link || "";
@@ -193,7 +224,7 @@ function mapPost(post) {
   const title = stripHtml(post.title?.rendered || "");
   const url = post.link || "";
   const excerpt = cleanExtractedContent(stripHtml(post.excerpt?.rendered || ""));
-  const contentText = cleanExtractedContent(stripHtml(post.content?.rendered || excerpt));
+  const contentText = extractStructuredHtmlContent(post.content?.rendered || excerpt);
 
   const content = buildDocumentContent({
     title,
@@ -218,7 +249,7 @@ function mapPage(page) {
   const title = stripHtml(page.title?.rendered || "");
   const url = page.link || "";
   const excerpt = cleanExtractedContent(stripHtml(page.excerpt?.rendered || ""));
-  const contentText = cleanExtractedContent(stripHtml(page.content?.rendered || excerpt));
+  const contentText = extractStructuredHtmlContent(page.content?.rendered || excerpt);
 
   const content = buildDocumentContent({
     title,

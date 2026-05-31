@@ -67,6 +67,47 @@ function extractKeywords(question = "") {
     .filter((word) => !STOP_WORDS.has(word));
 }
 
+function extractPriorityTokens(question = "") {
+  return Array.from(
+    new Set(
+      normalizeForSearch(question)
+        .split(" ")
+        .filter((word) => word.length >= 4)
+        .filter((word) => !STOP_WORDS.has(word))
+    )
+  );
+}
+
+function extractEntityTokens(question = "") {
+  return Array.from(
+    new Set(
+      extractPriorityTokens(question).filter(
+        (word) =>
+          word.length >= 5 &&
+          ![
+            "thong",
+            "thongtin",
+            "huong",
+            "dan",
+            "dung",
+            "loai",
+            "nhung",
+            "co",
+            "khong",
+            "bao",
+            "gia",
+            "cua",
+            "nhom",
+            "keo",
+            "khoa",
+            "gioang",
+            "phukien"
+          ].includes(word)
+      )
+    )
+  );
+}
+
 function extractStrongTokens(question = "") {
   return Array.from(
     new Set(
@@ -76,6 +117,78 @@ function extractStrongTokens(question = "") {
         .filter((word) => /[a-z]/.test(word) && /\d/.test(word))
     )
   );
+}
+
+function levenshteinDistance(a = "", b = "") {
+  if (a === b) {
+    return 0;
+  }
+
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const matrix = Array.from({ length: rows }, () => Array(cols).fill(0));
+
+  for (let row = 0; row < rows; row += 1) {
+    matrix[row][0] = row;
+  }
+
+  for (let col = 0; col < cols; col += 1) {
+    matrix[0][col] = col;
+  }
+
+  for (let row = 1; row < rows; row += 1) {
+    for (let col = 1; col < cols; col += 1) {
+      const cost = a[row - 1] === b[col - 1] ? 0 : 1;
+      matrix[row][col] = Math.min(
+        matrix[row - 1][col] + 1,
+        matrix[row][col - 1] + 1,
+        matrix[row - 1][col - 1] + cost
+      );
+    }
+  }
+
+  return matrix[a.length][b.length];
+}
+
+function hasApproxTokenMatch(textTokens = [], queryToken = "") {
+  if (!queryToken) {
+    return false;
+  }
+
+  return textTokens.some((token) => {
+    if (token === queryToken) {
+      return true;
+    }
+
+    if (Math.abs(token.length - queryToken.length) > 2) {
+      return false;
+    }
+
+    const maxDistance = queryToken.length >= 6 ? 2 : 1;
+    return levenshteinDistance(token, queryToken) <= maxDistance;
+  });
+}
+
+function matchTokenAcrossFields(match, token = "") {
+  if (!token) {
+    return false;
+  }
+
+  const titleTokens = extractNormalizedTokens(match.title || "");
+  const contentTokens = extractNormalizedTokens(match.content || "");
+  const urlTokens = extractNormalizedTokens(match.url || "");
+
+  return (
+    hasApproxTokenMatch(titleTokens, token) ||
+    hasApproxTokenMatch(contentTokens, token) ||
+    hasApproxTokenMatch(urlTokens, token)
+  );
+}
+
+function extractNormalizedTokens(text = "") {
+  return normalizeForSearch(text)
+    .split(" ")
+    .filter(Boolean);
 }
 
 function detectIntent(question = "") {
@@ -129,10 +242,15 @@ function extractUsefulContentLines(text = "") {
     );
 }
 
-function buildSourceSummary(group, sourceDocuments = []) {
+function buildSourceSummary(question, group, sourceDocuments = []) {
   const combinedContent = sourceDocuments.map((document) => document.content || "").join("\n");
   const usefulLines = extractUsefulContentLines(combinedContent);
-  const usefulText = normalizeWhitespace(usefulLines.join(" "));
+  const relevantLines = selectRelevantLines(
+    question,
+    usefulLines,
+    group?.source_type === "product" ? 6 : 8
+  );
+  const usefulText = normalizeWhitespace((relevantLines.length ? relevantLines : usefulLines).join(" "));
   const descriptiveSentences = usefulText
     .split(/(?<=[.!?])\s+/)
     .map((sentence) => sentence.trim())
@@ -145,8 +263,53 @@ function buildSourceSummary(group, sourceDocuments = []) {
     url: group.url || "",
     sourceType: group.source_type || "unknown",
     summary: descriptiveSentences.slice(0, 3).join(" "),
-    highlights: usefulLines.slice(0, 6)
+    highlights: relevantLines.length ? relevantLines : usefulLines.slice(0, 6)
   };
+}
+
+function selectRelevantLines(question = "", usefulLines = [], limit = 6) {
+  if (!usefulLines.length) {
+    return [];
+  }
+
+  const questionKeywords = extractKeywords(question);
+  const strongTokens = extractStrongTokens(question);
+  const priorityTokens = extractPriorityTokens(question);
+
+  const rankedLines = usefulLines
+    .map((line, index) => {
+      const normalizedLine = normalizeForSearch(line);
+      const faqScore = scoreFaqLine(questionKeywords, strongTokens, line);
+      const priorityScore = priorityTokens.reduce((total, token) => {
+        if (!token || !normalizedLine.includes(token)) {
+          return total;
+        }
+
+        return total + 5;
+      }, 0);
+      const qaBonus = /^hoi:|^tra loi:/i.test(line) ? 4 : 0;
+
+      return {
+        line,
+        index,
+        score: faqScore + priorityScore + qaBonus
+      };
+    })
+    .sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+
+      return a.index - b.index;
+    });
+
+  const positiveMatches = rankedLines.filter((item) => item.score > 0);
+  const selected = (positiveMatches.length ? positiveMatches : rankedLines)
+    .slice(0, limit)
+    .sort((a, b) => a.index - b.index)
+    .map((item) => item.line);
+
+  return Array.from(new Set(selected));
 }
 
 function getSourceTypeBonus(intent, sourceType = "") {
@@ -163,7 +326,11 @@ function getSourceTypeBonus(intent, sourceType = "") {
   }
 
   if (intent.isCategoryIntent && (sourceType === "category" || sourceType === "page")) {
-    return 8;
+    return 24;
+  }
+
+  if (intent.isCategoryIntent && sourceType === "product") {
+    return -10;
   }
 
   if (intent.isContactIntent && sourceType === "page") {
@@ -204,12 +371,28 @@ function buildFallbackReply(question, sourceGroups) {
 
 function isProductFocusedQuestion(question, sourceGroups = []) {
   const primarySource = sourceGroups[0];
+  const intent = detectIntent(question);
 
   if (!primarySource || primarySource.source_type !== "product") {
     return false;
   }
 
-  return true;
+  if (intent.isCategoryIntent || intent.isAdviceIntent || intent.isPolicyIntent) {
+    return false;
+  }
+
+  const strongTokens = extractStrongTokens(question);
+  const entityTokens = extractEntityTokens(question);
+
+  if (strongTokens.length) {
+    return true;
+  }
+
+  if (entityTokens.length && sourceGroups.length === 1 && (primarySource.keywordScore || 0) >= 20) {
+    return true;
+  }
+
+  return sourceGroups.length === 1 && (primarySource.keywordScore || 0) >= 28;
 }
 
 function formatProductFocusedReply(sourceGroup, generatedReply = "") {
@@ -446,6 +629,15 @@ function compareSourceGroups(a, b, intent) {
     }
   }
 
+  if (intent.isCategoryIntent) {
+    const aCategoryPreferred = a.source_type === "category" || a.source_type === "page" ? 1 : 0;
+    const bCategoryPreferred = b.source_type === "category" || b.source_type === "page" ? 1 : 0;
+
+    if (aCategoryPreferred !== bCategoryPreferred) {
+      return bCategoryPreferred - aCategoryPreferred;
+    }
+  }
+
   if (b.rerankScore !== a.rerankScore) {
     return b.rerankScore - a.rerankScore;
   }
@@ -461,10 +653,13 @@ function compareSourceGroups(a, b, intent) {
   return 0;
 }
 
-function computeKeywordScore(questionKeywords, strongTokens, match) {
+function computeKeywordScore(questionKeywords, priorityTokens, strongTokens, match) {
   const titleText = normalizeForSearch(match.title || "");
   const contentText = normalizeForSearch(match.content || "");
   const urlText = normalizeForSearch(match.url || "");
+  const titleTokens = extractNormalizedTokens(match.title || "");
+  const contentTokens = extractNormalizedTokens(match.content || "");
+  const urlTokens = extractNormalizedTokens(match.url || "");
 
   let score = questionKeywords.reduce((currentScore, keyword) => {
     let nextScore = currentScore;
@@ -484,6 +679,30 @@ function computeKeywordScore(questionKeywords, strongTokens, match) {
     return nextScore;
   }, 0);
 
+  let matchedPriorityCount = 0;
+
+  priorityTokens.forEach((token) => {
+    const inTitle = hasApproxTokenMatch(titleTokens, token);
+    const inContent = hasApproxTokenMatch(contentTokens, token);
+    const inUrl = hasApproxTokenMatch(urlTokens, token);
+
+    if (inTitle || inContent || inUrl) {
+      matchedPriorityCount += 1;
+    }
+
+    if (inTitle) {
+      score += 10;
+    }
+
+    if (inContent) {
+      score += 4;
+    }
+
+    if (inUrl) {
+      score += 6;
+    }
+  });
+
   strongTokens.forEach((token) => {
     if (titleText.includes(token)) {
       score += 15;
@@ -498,13 +717,43 @@ function computeKeywordScore(questionKeywords, strongTokens, match) {
     }
   });
 
+  if (priorityTokens.length) {
+    score += matchedPriorityCount * 8;
+
+    if (matchedPriorityCount === 0) {
+      score -= 20;
+    } else if (matchedPriorityCount < Math.ceil(priorityTokens.length / 2)) {
+      score -= 8;
+    }
+  }
+
   return score;
 }
 
-async function searchKeywordMatches(questionKeywords, strongTokens) {
-  const searchTerms = strongTokens.length
-    ? Array.from(new Set(strongTokens))
-    : Array.from(new Set(questionKeywords)).slice(0, 6);
+function buildEntitySearchTerms(question = "", questionKeywords = [], strongTokens = []) {
+  const entityTokens = extractEntityTokens(question);
+
+  if (entityTokens.length) {
+    return entityTokens.flatMap((token) => {
+      const terms = [token];
+
+      if (token.length >= 5) {
+        terms.push(token.slice(0, 4));
+      }
+
+      return terms;
+    });
+  }
+
+  if (strongTokens.length) {
+    return Array.from(new Set(strongTokens));
+  }
+
+  return Array.from(new Set(questionKeywords)).slice(0, 6);
+}
+
+async function searchKeywordMatches(question, questionKeywords, strongTokens) {
+  const searchTerms = buildEntitySearchTerms(question, questionKeywords, strongTokens);
 
   if (!searchTerms.length) {
     return [];
@@ -552,25 +801,59 @@ function mergeMatches(vectorMatches = [], keywordMatches = []) {
   return Array.from(merged.values());
 }
 
+function applyEntityFirstRetrieval(question, matches = []) {
+  const entityTokens = extractEntityTokens(question);
+
+  if (!entityTokens.length) {
+    return matches;
+  }
+
+  const rankedMatches = matches.map((match) => {
+    const matchedEntityTokens = entityTokens.filter((token) => matchTokenAcrossFields(match, token));
+
+    return {
+      ...match,
+      matchedEntityTokens
+    };
+  });
+
+  const entityMatched = rankedMatches.filter((match) => match.matchedEntityTokens.length > 0);
+
+  if (!entityMatched.length) {
+    return rankedMatches;
+  }
+
+  const strongEntityMatched = entityMatched.filter(
+    (match) => match.matchedEntityTokens.length >= Math.max(1, Math.ceil(entityTokens.length / 2))
+  );
+
+  return strongEntityMatched.length ? strongEntityMatched : entityMatched;
+}
+
 function scoreMatches(question, matches = []) {
   const keywords = extractKeywords(question);
+  const priorityTokens = extractPriorityTokens(question);
   const strongTokens = extractStrongTokens(question);
   const intent = detectIntent(question);
 
   return matches.map((match) => {
     const similarity = Number(match.similarity || 0);
-    const keywordScore = computeKeywordScore(keywords, strongTokens, match);
+    const keywordScore = computeKeywordScore(keywords, priorityTokens, strongTokens, match);
     const sourceTypeBonus = getSourceTypeBonus(intent, match.source_type || "");
     const exactTokenBonus =
       strongTokens.some((token) => normalizeForSearch(match.title || "").includes(token)) ? 20 : 0;
     const contentTokenBonus =
       strongTokens.some((token) => normalizeForSearch(match.content || "").includes(token)) ? 10 : 0;
+    const entityTokenBonus = Array.isArray(match.matchedEntityTokens)
+      ? match.matchedEntityTokens.length * 18
+      : 0;
     const titleTokenPenalty = strongTokens.length && exactTokenBonus === 0 && contentTokenBonus === 0 ? -18 : 0;
     const rerankScore =
       similarity * 100 +
       keywordScore * 4 +
       sourceTypeBonus +
       exactTokenBonus +
+      entityTokenBonus +
       contentTokenBonus +
       titleTokenPenalty;
 
@@ -580,6 +863,7 @@ function scoreMatches(question, matches = []) {
       keywordScore,
       sourceTypeBonus,
       exactTokenBonus,
+      entityTokenBonus,
       contentTokenBonus,
       titleTokenPenalty,
       rerankScore,
@@ -688,7 +972,7 @@ async function fetchSourceContext(sourceRoots = []) {
   return data || [];
 }
 
-function buildContext(sourceGroups = [], sourceDocuments = []) {
+function buildContext(question = "", sourceGroups = [], sourceDocuments = []) {
   if (!sourceGroups.length) {
     return "";
   }
@@ -709,7 +993,7 @@ function buildContext(sourceGroups = [], sourceDocuments = []) {
       const documents = (documentsBySourceRoot.get(group.source_root) || []).sort((a, b) =>
         a.source_id.localeCompare(b.source_id)
       );
-      const sourceSummary = buildSourceSummary(group, documents);
+      const sourceSummary = buildSourceSummary(question, group, documents);
 
       return [
         `[Nguon ${index + 1}]`,
@@ -767,6 +1051,7 @@ function buildRetrievalDebug(question, vectorMatches, keywordMatches, sourceGrou
       similarity: Number(item.similarity || 0).toFixed(3),
       keywordScore: item.keywordScore,
       exactTokenBonus: item.exactTokenBonus,
+      entityTokenBonus: item.entityTokenBonus,
       contentTokenBonus: item.contentTokenBonus,
       titleTokenPenalty: item.titleTokenPenalty,
       rerankScore: Number(item.rerankScore || 0).toFixed(3),
@@ -801,10 +1086,11 @@ export async function askRag(question) {
   const keywords = extractKeywords(cleanQuestion);
   const strongTokens = extractStrongTokens(cleanQuestion);
   const keywordSearchStartedAt = Date.now();
-  const keywordMatches = await searchKeywordMatches(keywords, strongTokens);
+  const keywordMatches = await searchKeywordMatches(cleanQuestion, keywords, strongTokens);
   const keywordSearchMs = Date.now() - keywordSearchStartedAt;
   const mergedMatches = mergeMatches(vectorMatches || [], keywordMatches);
-  const scoredMatches = scoreMatches(cleanQuestion, mergedMatches);
+  const entityFirstMatches = applyEntityFirstRetrieval(cleanQuestion, mergedMatches);
+  const scoredMatches = scoreMatches(cleanQuestion, entityFirstMatches);
   const sourceGroups = groupMatchesBySource(cleanQuestion, scoredMatches);
   const timings = {
     embedding: embeddingMs,
@@ -844,7 +1130,7 @@ export async function askRag(question) {
   const sourceFetchStartedAt = Date.now();
   const sourceDocuments = await fetchSourceContext(sourceGroups.map((group) => group.source_root));
   timings.source_context_fetch = Date.now() - sourceFetchStartedAt;
-  const context = [buildQuestionGuidance(cleanQuestion, sourceGroups), buildContext(sourceGroups, sourceDocuments)]
+  const context = [buildQuestionGuidance(cleanQuestion, sourceGroups), buildContext(cleanQuestion, sourceGroups, sourceDocuments)]
     .filter(Boolean)
     .join("\n\n");
   const intent = detectIntent(cleanQuestion);

@@ -66,6 +66,11 @@ export function stripHtml(input = "") {
         .replace(/<\/div>/gi, "\n")
         .replace(/<\/li>/gi, "\n")
         .replace(/<\/tr>/gi, "\n")
+        .replace(/<\/h[1-6]>/gi, "\n\n")
+        .replace(/<\/a>/gi, "\n")
+        .replace(/<\/table>/gi, "\n\n")
+        .replace(/<\/ul>/gi, "\n\n")
+        .replace(/<\/ol>/gi, "\n\n")
         .replace(/<\/?[^>]+(>|$)/g, " ")
         .replace(/\[.*?\]/g, " ")
     )
@@ -103,6 +108,18 @@ function isLikelyNoiseSegment(segment = "") {
     return true;
   }
 
+  if (/^(toggle|chuyen doi|aria|icon-angle-down)$/i.test(normalizeForComparison(text))) {
+    return true;
+  }
+
+  if (/^(tong don|chiet khau|duoi \d+|tu \d+ den \d+|tren \d+)/i.test(normalizeForComparison(text))) {
+    return true;
+  }
+
+  if (/^\d+%$/.test(text)) {
+    return true;
+  }
+
   if (/^[#.;:{}()[\]0-9a-z-]+$/i.test(text) && !/[a-z]/i.test(text.replace(/[a-z]{3,}/gi, ""))) {
     return true;
   }
@@ -115,6 +132,85 @@ function isLikelyNoiseSegment(segment = "") {
   }
 
   return false;
+}
+
+function normalizeForComparison(text = "") {
+  return String(text)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cleanFaqQuestion(question = "") {
+  return normalizeWhitespace(stripHtml(question))
+    .replace(/^[-*]\s*/, "")
+    .replace(/\?{2,}/g, "?")
+    .trim();
+}
+
+function cleanFaqAnswer(answer = "") {
+  return cleanExtractedContent(stripHtml(answer))
+    .replace(/^[-*]\s*/, "")
+    .trim();
+}
+
+export function extractStructuredHtmlContent(input = "") {
+  const html = String(input || "");
+
+  if (!html.trim()) {
+    return "";
+  }
+
+  const accordionPattern =
+    /<div[^>]*class="accordion-item"[^>]*>[\s\S]*?<span>([\s\S]*?)<\/span>[\s\S]*?<div[^>]*class="accordion-inner"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/gi;
+  const faqBlocks = [];
+  let match;
+
+  while ((match = accordionPattern.exec(html))) {
+    const question = cleanFaqQuestion(match[1]);
+    const answer = cleanFaqAnswer(match[2]);
+
+    if (!question || !answer) {
+      continue;
+    }
+
+    faqBlocks.push(`Hoi: ${question}\nTra loi: ${answer}`);
+  }
+
+  if (faqBlocks.length >= 2) {
+    const titleMatches = Array.from(
+      html.matchAll(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/gi),
+      (headingMatch) => normalizeWhitespace(stripHtml(headingMatch[1]))
+    ).filter(Boolean);
+    const intro = cleanExtractedContent(
+      stripHtml(
+        html
+          .replace(/<div[^>]*class="accordion"[\s\S]*$/i, " ")
+          .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      )
+    );
+    const introLines = intro
+      .split(/\n+/)
+      .map((line) => normalizeWhitespace(line))
+      .filter(Boolean)
+      .filter((line) => !/^cau hoi thuong gap$/i.test(normalizeForComparison(line)))
+      .filter((line) => !/^nhan bao gia ngay$/i.test(normalizeForComparison(line)))
+      .slice(0, 4);
+
+    return normalizeWhitespace(
+      [
+        titleMatches[0] ? `Tieu de trang: ${titleMatches[0]}` : "",
+        ...introLines,
+        ...faqBlocks
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+    );
+  }
+
+  return cleanExtractedContent(stripHtml(html));
 }
 
 export function cleanExtractedContent(input = "") {
@@ -198,36 +294,149 @@ export function chunkText(text = "", maxLength = 1200, overlap = 200) {
     return [normalizedText];
   }
 
+  const blocks = normalizedText
+    .split(/\n+/)
+    .map((block) => normalizeWhitespace(block))
+    .filter(Boolean)
+    .flatMap((block) => splitBlockForChunking(block, maxLength));
+
+  if (!blocks.length) {
+    return [normalizedText];
+  }
+
   const chunks = [];
-  let start = 0;
+  let currentBlocks = [];
+  let currentLength = 0;
 
-  while (start < normalizedText.length) {
-    let end = Math.min(start + maxLength, normalizedText.length);
+  for (const block of blocks) {
+    const separatorLength = currentBlocks.length ? 1 : 0;
+    const projectedLength = currentLength + separatorLength + block.length;
 
-    if (end < normalizedText.length) {
-      const lineBreak = normalizedText.lastIndexOf("\n", end);
-      const sentenceBreak = Math.max(
-        normalizedText.lastIndexOf(". ", end),
-        normalizedText.lastIndexOf("; ", end),
-        normalizedText.lastIndexOf(": ", end)
-      );
-      const safeBreak = Math.max(lineBreak, sentenceBreak);
-
-      if (safeBreak > start + Math.floor(maxLength * 0.6)) {
-        end = safeBreak + 1;
-      }
+    if (projectedLength <= maxLength || !currentBlocks.length) {
+      currentBlocks.push(block);
+      currentLength = projectedLength;
+      continue;
     }
 
-    chunks.push(normalizedText.slice(start, end).trim());
+    chunks.push(currentBlocks.join("\n").trim());
+    currentBlocks = buildOverlapBlocks(currentBlocks, overlap);
+    currentLength = currentBlocks.join("\n").length;
 
-    if (end >= normalizedText.length) {
-      break;
+    if (currentLength) {
+      currentBlocks.push(block);
+      currentLength = currentBlocks.join("\n").length;
+    } else {
+      currentBlocks = [block];
+      currentLength = block.length;
     }
+  }
 
-    start = Math.max(end - overlap, start + 1);
+  if (currentBlocks.length) {
+    chunks.push(currentBlocks.join("\n").trim());
   }
 
   return chunks.filter(Boolean);
+}
+
+function splitBlockForChunking(block = "", maxLength = 1200) {
+  const normalizedBlock = normalizeWhitespace(block);
+
+  if (!normalizedBlock) {
+    return [];
+  }
+
+  if (normalizedBlock.length <= maxLength) {
+    return [normalizedBlock];
+  }
+
+  const sentences = normalizedBlock
+    .split(/(?<=[.!?])\s+|(?<=:)\s+/)
+    .map((sentence) => normalizeWhitespace(sentence))
+    .filter(Boolean);
+
+  if (sentences.length <= 1) {
+    return splitLongSentence(normalizedBlock, maxLength);
+  }
+
+  const result = [];
+  let current = "";
+
+  for (const sentence of sentences) {
+    const candidate = current ? `${current} ${sentence}` : sentence;
+
+    if (candidate.length <= maxLength) {
+      current = candidate;
+      continue;
+    }
+
+    if (current) {
+      result.push(current);
+    }
+
+    if (sentence.length <= maxLength) {
+      current = sentence;
+    } else {
+      result.push(...splitLongSentence(sentence, maxLength));
+      current = "";
+    }
+  }
+
+  if (current) {
+    result.push(current);
+  }
+
+  return result.filter(Boolean);
+}
+
+function splitLongSentence(text = "", maxLength = 1200) {
+  const words = normalizeWhitespace(text).split(" ").filter(Boolean);
+  const chunks = [];
+  let current = "";
+
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+
+    if (candidate.length <= maxLength) {
+      current = candidate;
+      continue;
+    }
+
+    if (current) {
+      chunks.push(current);
+    }
+
+    current = word;
+  }
+
+  if (current) {
+    chunks.push(current);
+  }
+
+  return chunks;
+}
+
+function buildOverlapBlocks(blocks = [], overlap = 200) {
+  if (!blocks.length || overlap <= 0) {
+    return [];
+  }
+
+  const selected = [];
+  let length = 0;
+
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index];
+    const separatorLength = selected.length ? 1 : 0;
+    const projectedLength = length + separatorLength + block.length;
+
+    if (projectedLength > overlap && selected.length) {
+      break;
+    }
+
+    selected.unshift(block);
+    length = projectedLength;
+  }
+
+  return selected;
 }
 
 export function buildChunkedDocuments(baseDocument, options = {}) {
