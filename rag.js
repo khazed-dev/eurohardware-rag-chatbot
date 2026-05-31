@@ -49,6 +49,8 @@ const STOP_WORDS = new Set([
 function normalizeForSearch(text = "") {
   return String(text)
     .toLowerCase()
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "d")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9\s]/g, " ")
@@ -201,7 +203,7 @@ function detectIntent(question = "") {
       ),
     isCategoryIntent:
       /danh muc|nhom san pham|loai nao|dong nao|phan loai|giai phap/.test(normalized),
-    isContactIntent: /hotline|zalo|so dien thoai|lien he/.test(normalized),
+    isContactIntent: /hotline|zalo|so dien thoai|dien thoai|so lien he|sdt|lien he/.test(normalized),
     isUsageIntent: /huong dan|cach dung|su dung|lap dat|bao quan|van hanh/.test(normalized),
     isAdviceIntent: /tu van|goi y|nen dung|phu hop|chon loai nao|chon mau nao/.test(normalized),
     isRetailIntent: /ban le|mua le|chi ban si|ban si/.test(normalized),
@@ -383,8 +385,20 @@ function isProductFocusedQuestion(question, sourceGroups = []) {
 
   const strongTokens = extractStrongTokens(question);
   const entityTokens = extractEntityTokens(question);
+  const normalizedQuestion = normalizeForSearch(question);
+  const normalizedPrimaryTitle = normalizeForSearch(primarySource.title || "");
+  const primaryCoverage = computeTitleCoverage(question, primarySource.title || "");
+  const secondCoverage = computeTitleCoverage(question, sourceGroups[1]?.title || "");
 
   if (strongTokens.length) {
+    return true;
+  }
+
+  if (normalizedQuestion && normalizedQuestion.length >= 12 && normalizedPrimaryTitle.includes(normalizedQuestion)) {
+    return true;
+  }
+
+  if (primaryCoverage >= 0.72 && primaryCoverage > secondCoverage) {
     return true;
   }
 
@@ -393,6 +407,18 @@ function isProductFocusedQuestion(question, sourceGroups = []) {
   }
 
   return sourceGroups.length === 1 && (primarySource.keywordScore || 0) >= 28;
+}
+
+function computeTitleCoverage(question = "", title = "") {
+  const questionTokens = extractPriorityTokens(question);
+
+  if (!questionTokens.length || !title) {
+    return 0;
+  }
+
+  const titleTokens = extractNormalizedTokens(title);
+  const matchedCount = questionTokens.filter((token) => hasApproxTokenMatch(titleTokens, token)).length;
+  return matchedCount / questionTokens.length;
 }
 
 function formatProductFocusedReply(sourceGroup, generatedReply = "") {
@@ -440,9 +466,16 @@ function buildDeterministicProductReply(sourceGroup, sourceDocuments = []) {
     .join("\n");
 
   const usefulLines = extractUsefulContentLines(combinedContent);
+  const relevantLines = usefulLines
+    .filter((line) => line.length >= 20)
+    .filter((line) => !/^(sku|thuong hieu|the|tinh trang kho|thuoc tinh):/i.test(line))
+    .filter((line) => !/^xem chi tiet tai:/i.test(line));
 
-  const primaryLine = usefulLines.find((line) => line.length >= 30 && !/[):]$/.test(line)) || "";
-  const usefulText = normalizeWhitespace(usefulLines.join(" "));
+  const primaryLine =
+    relevantLines.find((line) => line.length >= 40 && !/[):]$/.test(line)) ||
+    relevantLines.find((line) => line.length >= 24) ||
+    "";
+  const usefulText = normalizeWhitespace(relevantLines.join(" "));
   const descriptiveSentences = usefulText
     .split(/(?<=[.!?])\s+/)
     .map((sentence) => sentence.trim())
@@ -458,6 +491,63 @@ function buildDeterministicProductReply(sourceGroup, sourceDocuments = []) {
   const productLink = sourceGroup.url ? ` Xem chi tiết tại: ${sourceGroup.url}` : "";
 
   return normalizeWhitespace(`${shortDescription}${productLink}`).trim();
+}
+
+function buildStructuredProductReply(sourceGroup, sourceDocuments = []) {
+  if (!sourceGroup || sourceGroup.source_type !== "product") {
+    return "";
+  }
+
+  const combinedContent = sourceDocuments
+    .map((document) => document.content || "")
+    .join("\n");
+  const usefulLines = extractUsefulContentLines(combinedContent)
+    .filter((line) => line.length >= 20)
+    .filter((line) => !/^(sku|thuong hieu|the|tinh trang kho|thuoc tinh):/i.test(line))
+    .filter((line) => !/^xem chi tiet tai:/i.test(line));
+  const usefulText = normalizeWhitespace(usefulLines.join(" "));
+  const descriptiveSentences = usefulText
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => normalizeWhitespace(sentence))
+    .filter(Boolean)
+    .filter((sentence) => sentence.length >= 24)
+    .filter((sentence) => !/^(gia hien tai|gia niem yet|gia khuyen mai|gia lien he)/i.test(sentence));
+  const pickedSentences = [];
+
+  for (const sentence of descriptiveSentences) {
+    if (pickedSentences.includes(sentence)) {
+      continue;
+    }
+
+    pickedSentences.push(sentence);
+
+    if (pickedSentences.length >= 2) {
+      break;
+    }
+  }
+
+  const productLink = sourceGroup.url ? ` Xem chi tiết tại: ${sourceGroup.url}` : "";
+
+  if (pickedSentences.length) {
+    return normalizeWhitespace(`${pickedSentences.join(" ")}${productLink}`).trim();
+  }
+
+  const primaryLine =
+    usefulLines.find((line) => line.length >= 40 && !/[):]$/.test(line)) ||
+    usefulLines.find((line) => line.length >= 24) ||
+    "";
+
+  if (primaryLine) {
+    return normalizeWhitespace(`${primaryLine}${productLink}`).trim();
+  }
+
+  return normalizeWhitespace(
+    `${stripProductVariantSuffix(sourceGroup.title || "") || sourceGroup.title} là sản phẩm anh/chị có thể tham khảo cho nhu cầu này nhé.${productLink}`
+  ).trim();
+}
+
+function stripProductVariantSuffix(title = "") {
+  return normalizeWhitespace(String(title || "").replace(/\s*[–-]\s*[A-Z0-9./()]+$/i, ""));
 }
 
 function buildContactReply() {
@@ -483,7 +573,7 @@ function buildQuoteInfoReply() {
 }
 
 function buildUsageReply(sourceGroup, sourceDocuments = []) {
-  const productReply = buildDeterministicProductReply(sourceGroup, sourceDocuments);
+  const productReply = buildStructuredProductReply(sourceGroup, sourceDocuments);
 
   if (productReply) {
     return `${productReply} Nếu anh/chị cần hướng dẫn sử dụng hoặc lắp đặt chi tiết hơn, bên em hỗ trợ qua Hotline/Zalo ${DEFAULT_HOTLINE} nhé.`;
@@ -1067,6 +1157,26 @@ export async function askRag(question) {
 
   const requestStartedAt = Date.now();
   const cleanQuestion = normalizeWhitespace(question);
+  const intent = detectIntent(cleanQuestion);
+
+  if (intent.isContactIntent) {
+    return {
+      reply: buildContactReply(),
+      sources: [],
+      debug: {
+        question: cleanQuestion,
+        vector_match_count: 0,
+        keyword_match_count: 0,
+        selected_source_count: 0,
+        selected_sources: [],
+        answer_mode: "deterministic_contact_early",
+        provider: getGroqDebugConfig(),
+        timings_ms: {
+          total: Date.now() - requestStartedAt
+        }
+      }
+    };
+  }
 
   const embeddingStartedAt = Date.now();
   const queryEmbedding = await createEmbedding(cleanQuestion);
@@ -1133,7 +1243,6 @@ export async function askRag(question) {
   const context = [buildQuestionGuidance(cleanQuestion, sourceGroups), buildContext(cleanQuestion, sourceGroups, sourceDocuments)]
     .filter(Boolean)
     .join("\n\n");
-  const intent = detectIntent(cleanQuestion);
   const productFocused = isProductFocusedQuestion(cleanQuestion, sourceGroups);
   const primarySourceDocuments = sourceDocuments.filter(
     (document) => getSourceRoot(document.source_id || "") === sourceGroups[0]?.source_root
@@ -1267,7 +1376,7 @@ export async function askRag(question) {
   if (productFocused) {
     reply = intent.isUsageIntent
       ? buildUsageReply(sourceGroups[0], primarySourceDocuments)
-      : buildDeterministicProductReply(sourceGroups[0], primarySourceDocuments);
+      : buildStructuredProductReply(sourceGroups[0], primarySourceDocuments);
     timings.answer_generation = 0;
     timings.total = Date.now() - requestStartedAt;
 
